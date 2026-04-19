@@ -1,0 +1,22 @@
+# Maven
+/target/
+target/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Java build artifacts
+*.class
+
+# Temporary files
+*.tmp
+*.swp
