@@ -82,6 +82,143 @@ public class MLPModel {
         return MathUtils.softmax(logits);
     }
 
+    /**
+     * Computes gradients for one sample using cross-entropy with softmax output.
+     */
+    public Gradient backward(double[] input, int label) {
+        if (input == null) {
+            throw new IllegalArgumentException("input must not be null");
+        }
+        if (input.length != INPUT_DIM) {
+            throw new IllegalArgumentException(
+                    "Expected input length " + INPUT_DIM + " but got " + input.length);
+        }
+        if (label < 0 || label >= OUTPUT_DIM) {
+            throw new IllegalArgumentException("label out of bounds: " + label);
+        }
+
+        double[] z1 = MathUtils.addBias(MathUtils.matVecMul(w1, input), b1);
+        double[] a1 = MathUtils.relu(z1);
+
+        double[] z2 = MathUtils.addBias(MathUtils.matVecMul(w2, a1), b2);
+        double[] a2 = MathUtils.relu(z2);
+
+        double[] logits = MathUtils.addBias(MathUtils.matVecMul(w3, a2), b3);
+        double[] probs = MathUtils.softmax(logits);
+
+        double[] dLogits = probs.clone();
+        dLogits[label] -= 1.0;
+
+        double[][] dW3 = MathUtils.outerProduct(a2, dLogits);
+        double[] db3 = dLogits.clone();
+
+        double[] dA2 = matTVecMul(w3, dLogits);
+        double[] dZ2 = hadamard(dA2, MathUtils.reluDeriv(z2));
+
+        double[][] dW2 = MathUtils.outerProduct(a1, dZ2);
+        double[] db2 = dZ2.clone();
+
+        double[] dA1 = matTVecMul(w2, dZ2);
+        double[] dZ1 = hadamard(dA1, MathUtils.reluDeriv(z1));
+
+        double[][] dW1 = MathUtils.outerProduct(input, dZ1);
+        double[] db1 = dZ1.clone();
+
+        return new Gradient(dW1, db1, dW2, db2, dW3, db3);
+    }
+
+    private static double[] matTVecMul(double[][] matrix, double[] vector) {
+        if (matrix == null || vector == null) {
+            throw new IllegalArgumentException("matrix and vector must not be null");
+        }
+        if (matrix.length == 0) {
+            return new double[0];
+        }
+        if (matrix[0].length != vector.length) {
+            throw new IllegalArgumentException("Dimension mismatch in matTVecMul");
+        }
+
+        int rows = matrix.length;
+        int cols = matrix[0].length;
+        double[] out = new double[rows];
+        for (int i = 0; i < rows; i++) {
+            if (matrix[i].length != cols) {
+                throw new IllegalArgumentException("Ragged matrix is not supported");
+            }
+            double sum = 0.0;
+            for (int j = 0; j < cols; j++) {
+                sum += matrix[i][j] * vector[j];
+            }
+            out[i] = sum;
+        }
+        return out;
+    }
+
+    private static double[] hadamard(double[] a, double[] b) {
+        if (a == null || b == null) {
+            throw new IllegalArgumentException("vectors must not be null");
+        }
+        if (a.length != b.length) {
+            throw new IllegalArgumentException("Dimension mismatch in hadamard");
+        }
+        double[] out = new double[a.length];
+        for (int i = 0; i < a.length; i++) {
+            out[i] = a[i] * b[i];
+        }
+        return out;
+    }
+
+    /**
+     * Per-layer gradients for one backward pass.
+     */
+    public static final class Gradient {
+        private final double[][] dW1;
+        private final double[] db1;
+        private final double[][] dW2;
+        private final double[] db2;
+        private final double[][] dW3;
+        private final double[] db3;
+
+        public Gradient(
+                double[][] dW1,
+                double[] db1,
+                double[][] dW2,
+                double[] db2,
+                double[][] dW3,
+                double[] db3) {
+            this.dW1 = dW1;
+            this.db1 = db1;
+            this.dW2 = dW2;
+            this.db2 = db2;
+            this.dW3 = dW3;
+            this.db3 = db3;
+        }
+
+        public double[][] getDW1() {
+            return dW1;
+        }
+
+        public double[] getDb1() {
+            return db1;
+        }
+
+        public double[][] getDW2() {
+            return dW2;
+        }
+
+        public double[] getDb2() {
+            return db2;
+        }
+
+        public double[][] getDW3() {
+            return dW3;
+        }
+
+        public double[] getDb3() {
+            return db3;
+        }
+    }
+
     private static void initMatrixXavier(double[][] weights, int fanIn, int fanOut, Random random) {
         double limit = Math.sqrt(6.0 / (fanIn + fanOut));
         for (int i = 0; i < weights.length; i++) {
