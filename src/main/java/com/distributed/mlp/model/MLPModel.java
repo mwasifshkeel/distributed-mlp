@@ -60,6 +60,28 @@ public class MLPModel {
         return b3;
     }
 
+    /**
+     * Runs forward propagation: affine + ReLU + affine + ReLU + affine + softmax.
+     */
+    public double[] forward(double[] input) {
+        if (input == null) {
+            throw new IllegalArgumentException("input must not be null");
+        }
+        if (input.length != INPUT_DIM) {
+            throw new IllegalArgumentException(
+                    "Expected input length " + INPUT_DIM + " but got " + input.length);
+        }
+
+        double[] z1 = MathUtils.addBias(MathUtils.matVecMul(w1, input), b1);
+        double[] a1 = MathUtils.relu(z1);
+
+        double[] z2 = MathUtils.addBias(MathUtils.matVecMul(w2, a1), b2);
+        double[] a2 = MathUtils.relu(z2);
+
+        double[] logits = MathUtils.addBias(MathUtils.matVecMul(w3, a2), b3);
+        return MathUtils.softmax(logits);
+    }
+
     private static void initMatrixXavier(double[][] weights, int fanIn, int fanOut, Random random) {
         double limit = Math.sqrt(6.0 / (fanIn + fanOut));
         for (int i = 0; i < weights.length; i++) {
