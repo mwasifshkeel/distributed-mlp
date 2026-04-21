@@ -8,8 +8,11 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Master server entrypoint for distributed training. 
@@ -17,9 +20,21 @@ import java.util.List;
 public final class Master {
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 3;
+    private static final double DEFAULT_LEARNING_RATE = 1e-3;
+    private static final int TOTAL_PARAMETERS =
+            com.distributed.mlp.model.MLPModel.INPUT_DIM * com.distributed.mlp.model.MLPModel.HIDDEN1_DIM
+                    + com.distributed.mlp.model.MLPModel.HIDDEN1_DIM
+                    + com.distributed.mlp.model.MLPModel.HIDDEN1_DIM * com.distributed.mlp.model.MLPModel.HIDDEN2_DIM
+                    + com.distributed.mlp.model.MLPModel.HIDDEN2_DIM
+                    + com.distributed.mlp.model.MLPModel.HIDDEN2_DIM * com.distributed.mlp.model.MLPModel.OUTPUT_DIM
+                    + com.distributed.mlp.model.MLPModel.OUTPUT_DIM;
 
     private final int port;
     private final int expectedWorkers;
+    private final double learningRate;
+    private final double[] globalWeights;
+    private final AtomicInteger totalUpdates;
+    private final ReentrantLock weightLock;
     private final List<Thread> workerThreads = new ArrayList<>();
 
     public Master(int port, int expectedWorkers) {
@@ -31,6 +46,10 @@ public final class Master {
         }
         this.port = port;
         this.expectedWorkers = expectedWorkers;
+        this.learningRate = DEFAULT_LEARNING_RATE;
+        this.globalWeights = new double[TOTAL_PARAMETERS];
+        this.totalUpdates = new AtomicInteger(0);
+        this.weightLock = new ReentrantLock();
     }
 
     public static void main(String[] args) {
@@ -76,6 +95,49 @@ public final class Master {
                 }
             }
         }
+    }
+
+    /**
+     * Returns a defensive snapshot of the current global weight vector.
+     */
+    public double[] snapshotGlobalWeights() {
+        weightLock.lock();
+        try {
+            return Arrays.copyOf(globalWeights, globalWeights.length);
+        } finally {
+            weightLock.unlock();
+        }
+    }
+
+    /**
+     * Applies one asynchronous SGD update and increments the global update counter.
+     */
+    public int applyGradient(double[] gradient) {
+        if (gradient == null) {
+            throw new IllegalArgumentException("gradient must not be null");
+        }
+        if (gradient.length != globalWeights.length) {
+            throw new IllegalArgumentException(
+                    "Expected gradient length " + globalWeights.length + " but got " + gradient.length);
+        }
+
+        weightLock.lock();
+        try {
+            for (int i = 0; i < globalWeights.length; i++) {
+                globalWeights[i] -= learningRate * gradient[i];
+            }
+        } finally {
+            weightLock.unlock();
+        }
+        return totalUpdates.incrementAndGet();
+    }
+
+    public int getTotalUpdates() {
+        return totalUpdates.get();
+    }
+
+    public int getGlobalWeightCount() {
+        return globalWeights.length;
     }
 
     private static final class WorkerHandler implements Runnable {
