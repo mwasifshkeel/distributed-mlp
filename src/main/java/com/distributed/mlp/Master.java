@@ -2,7 +2,9 @@ package com.distributed.mlp;
 
 import com.distributed.mlp.protocol.MessageProtocol;
 import com.distributed.mlp.protocol.MessageProtocol.ProtocolException;
+import com.distributed.mlp.protocol.WeightSerializer;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -140,7 +142,7 @@ public final class Master {
         return globalWeights.length;
     }
 
-    private static final class WorkerHandler implements Runnable {
+    private final class WorkerHandler implements Runnable {
         private final int workerId;
         private final Socket socket;
 
@@ -152,7 +154,8 @@ public final class Master {
         @Override
         public void run() {
             try (Socket autoCloseSocket = socket;
-                 DataInputStream in = new DataInputStream(autoCloseSocket.getInputStream())) {
+                 DataInputStream in = new DataInputStream(autoCloseSocket.getInputStream());
+                 DataOutputStream out = new DataOutputStream(autoCloseSocket.getOutputStream())) {
 
                 while (true) {
                     int[] header = MessageProtocol.readHeader(in);
@@ -160,11 +163,23 @@ public final class Master {
                     int type = header[1];
                     int payloadLength = totalLength - MessageProtocol.HEADER_SIZE;
 
-                    if (payloadLength > 0) {
-                        in.skipNBytes(payloadLength);
+                    switch (type) {
+                        case MessageProtocol.PULL_REQUEST -> {
+                            if (payloadLength > 0) {
+                                in.skipNBytes(payloadLength);
+                            }
+                            handlePullRequest(out);
+                        }
+                        default -> {
+                            if (payloadLength > 0) {
+                                in.skipNBytes(payloadLength);
+                            }
+                            System.out.printf("Worker %d -> unsupported message type=0x%02X, payload=%dB%n",
+                                    workerId,
+                                    type,
+                                    payloadLength);
+                        }
                     }
-
-                    System.out.printf("Worker %d -> message type=0x%02X, payload=%dB%n", workerId, type, payloadLength);
                 }
             } catch (EOFException | SocketException e) {
                 System.out.printf("Worker %d disconnected.%n", workerId);
@@ -173,6 +188,14 @@ public final class Master {
             } catch (IOException e) {
                 System.err.printf("Worker %d I/O error: %s%n", workerId, e.getMessage());
             }
+        }
+
+        private void handlePullRequest(DataOutputStream out) throws IOException, ProtocolException {
+            byte[] payload = WeightSerializer.toBytesDouble(snapshotGlobalWeights());
+            MessageProtocol.writeHeader(out, MessageProtocol.WEIGHT_RESPONSE, payload.length);
+            out.write(payload);
+            out.flush();
+            System.out.printf("Worker %d <- WEIGHT_RESPONSE sent (%d bytes)%n", workerId, payload.length);
         }
     }
 }
