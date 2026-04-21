@@ -170,6 +170,9 @@ public final class Master {
                             }
                             handlePullRequest(out);
                         }
+                        case MessageProtocol.PUSH_GRADIENT -> {
+                            handlePushGradient(in, payloadLength);
+                        }
                         default -> {
                             if (payloadLength > 0) {
                                 in.skipNBytes(payloadLength);
@@ -196,6 +199,20 @@ public final class Master {
             out.write(payload);
             out.flush();
             System.out.printf("Worker %d <- WEIGHT_RESPONSE sent (%d bytes)%n", workerId, payload.length);
+        }
+
+        private void handlePushGradient(DataInputStream in, int payloadLength) throws IOException {
+            if (payloadLength <= 0) {
+                System.err.printf("Worker %d sent PUSH_GRADIENT with no payload.%n", workerId);
+                return;
+            }
+
+            byte[] gradientPayload = new byte[payloadLength];
+            in.readFully(gradientPayload);
+            double[] gradient = WeightSerializer.fromBytesDouble(gradientPayload);
+
+            int updateNum = applyGradient(gradient);
+            System.out.printf("Worker %d -> PUSH_GRADIENT applied (update #%d)%n", workerId, updateNum);
         }
     }
 }
