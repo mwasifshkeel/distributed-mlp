@@ -12,6 +12,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +37,7 @@ public final class Worker {
     private static final long DEFAULT_SEED = 42L;
     private static final int IO_THREADS = 2;
     private static final int QUEUE_CAPACITY = 256;
+    private static final int MINI_BATCH_SIZE = 32;
 
     private final String host;
     private final int port;
@@ -85,9 +87,10 @@ public final class Worker {
         ExecutorService ioPool = Executors.newFixedThreadPool(IO_THREADS);
         ExecutorService computePool = Executors.newFixedThreadPool(computeThreads);
 
-        AtomicInteger enqueuedSteps = new AtomicInteger(0);
-        AtomicInteger nextStep = new AtomicInteger(0);
-        AtomicInteger completedSteps = new AtomicInteger(0);
+        int totalSamplesToEnqueue = steps * MINI_BATCH_SIZE;
+        AtomicInteger enqueuedSamples = new AtomicInteger(0);
+        AtomicInteger nextBatch = new AtomicInteger(0);
+        AtomicInteger completedBatches = new AtomicInteger(0);
         AtomicBoolean stopFlag = new AtomicBoolean(false);
         ReentrantLock socketLock = new ReentrantLock();
 
@@ -105,11 +108,11 @@ public final class Worker {
                 ioPool.submit(() -> {
                     try {
                         while (!stopFlag.get()) {
-                            int stepIdx = enqueuedSteps.getAndIncrement();
-                            if (stepIdx >= steps) {
+                            int sampleIdx = enqueuedSamples.getAndIncrement();
+                            if (sampleIdx >= totalSamplesToEnqueue) {
                                 return;
                             }
-                            Sample sample = shard.get(stepIdx % shard.size());
+                            Sample sample = shard.get(sampleIdx % shard.size());
                             sampleQueue.put(sample);
                         }
                     } catch (InterruptedException e) {
@@ -120,18 +123,22 @@ public final class Worker {
 
             for (int i = 0; i < computeThreads; i++) {
                 computePool.submit(() -> {
+                    MLPModel localModel = new MLPModel();
+                    localModel.initXavier(seed + workerId);
+
                     while (!stopFlag.get()) {
-                        int step = nextStep.getAndIncrement();
-                        if (step >= steps) {
+                        int batchIdx = nextBatch.getAndIncrement();
+                        if (batchIdx >= steps) {
                             return;
                         }
 
                         try {
-                            Sample sample = sampleQueue.poll(2, TimeUnit.SECONDS);
-                            if (sample == null) {
-                                if (enqueuedSteps.get() >= steps) {
-                                    return;
-                                }
+                            List<Sample> miniBatch = assembleMiniBatch(
+                                    sampleQueue,
+                                    stopFlag,
+                                    enqueuedSamples,
+                                    totalSamplesToEnqueue);
+                            if (miniBatch.isEmpty()) {
                                 continue;
                             }
 
@@ -141,16 +148,31 @@ public final class Worker {
                                 boolean shutdown = readWeightResponseOrShutdown(in);
                                 if (shutdown) {
                                     stopFlag.set(true);
-                                    System.out.printf("Worker %d received SHUTDOWN at step %d%n", workerId, step);
+                                    System.out.printf("Worker %d received SHUTDOWN at batch %d%n", workerId, batchIdx);
                                     return;
                                 }
                             } finally {
                                 socketLock.unlock();
                             }
 
-                            model.forward(sample.pixels());
-                            Gradient grad = model.backward(sample.pixels(), sample.label());
-                            byte[] payload = WeightSerializer.toBytesDouble(flattenGradient(grad));
+                            double[] batchGradient = null;
+                            for (Sample sample : miniBatch) {
+                                localModel.forward(sample.pixels());
+                                Gradient grad = localModel.backward(sample.pixels(), sample.label());
+                                double[] flatGrad = flattenGradient(grad);
+                                if (batchGradient == null) {
+                                    batchGradient = new double[flatGrad.length];
+                                }
+                                for (int g = 0; g < flatGrad.length; g++) {
+                                    batchGradient[g] += flatGrad[g];
+                                }
+                            }
+                            double scale = 1.0 / miniBatch.size();
+                            for (int g = 0; g < batchGradient.length; g++) {
+                                batchGradient[g] *= scale;
+                            }
+
+                            byte[] payload = WeightSerializer.toBytesDouble(batchGradient);
 
                             socketLock.lock();
                             try {
@@ -159,9 +181,13 @@ public final class Worker {
                                 socketLock.unlock();
                             }
 
-                            int done = completedSteps.incrementAndGet();
+                            int done = completedBatches.incrementAndGet();
                             if (done % 10 == 0) {
-                                System.out.printf("Worker %d completed step %d/%d%n", workerId, done, steps);
+                                System.out.printf("Worker %d completed batches %d/%d (batchSize=%d)%n",
+                                        workerId,
+                                        done,
+                                        steps,
+                                        MINI_BATCH_SIZE);
                             }
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
@@ -236,6 +262,25 @@ public final class Worker {
         MessageProtocol.writeHeader(out, MessageProtocol.PUSH_GRADIENT, gradientPayload.length);
         out.write(gradientPayload);
         out.flush();
+    }
+
+    private static List<Sample> assembleMiniBatch(
+            BlockingQueue<Sample> sampleQueue,
+            AtomicBoolean stopFlag,
+            AtomicInteger enqueuedSamples,
+            int totalSamplesToEnqueue) throws InterruptedException {
+        List<Sample> miniBatch = new ArrayList<>(MINI_BATCH_SIZE);
+        while (!stopFlag.get() && miniBatch.size() < MINI_BATCH_SIZE) {
+            Sample sample = sampleQueue.poll(2, TimeUnit.SECONDS);
+            if (sample != null) {
+                miniBatch.add(sample);
+                continue;
+            }
+            if (enqueuedSamples.get() >= totalSamplesToEnqueue && sampleQueue.isEmpty()) {
+                break;
+            }
+        }
+        return miniBatch;
     }
 
     private static double[] flattenGradient(Gradient gradient) {
