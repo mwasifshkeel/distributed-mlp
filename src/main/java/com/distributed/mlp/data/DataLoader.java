@@ -1,31 +1,28 @@
 package com.distributed.mlp.data;
 
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.image.BufferedImage;
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.Random;
 import java.util.Set;
-import javax.imageio.ImageIO;
 
 /**
- * Loads Food-101 images, normalizes pixels to [0,1], and creates deterministic worker shards.
+ * Loads Food-101 images, normalizes pixels to [0,1], and creates deterministic
+ * worker shards.
  */
 public class DataLoader {
-    public static final int TARGET_WIDTH = 128;
-    public static final int TARGET_HEIGHT = 128;
+
+    public static final int TARGET_WIDTH = 32;
+    public static final int TARGET_HEIGHT = 32;
+    public static final int INPUT_SIZE = 3072;
     public static final int CHANNELS = 3;
-    public static final int INPUT_SIZE = TARGET_WIDTH * TARGET_HEIGHT * CHANNELS;
     public static final long DEFAULT_SEED = 42L;
+    private static final int MAX_IMAGES = 100;
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("jpg", "jpeg", "png");
 
@@ -33,6 +30,7 @@ public class DataLoader {
      * Container for one training sample.
      */
     public static final class Sample {
+
         private final double[] pixels;
         private final int label;
         private final Path path;
@@ -56,120 +54,62 @@ public class DataLoader {
         }
     }
 
-    /**
-     * Loads a worker shard from the default dataset path.
-     */
     public List<Sample> loadShard(int workerId, int totalWorkers) throws IOException {
-        Path defaultRoot = Path.of("data", "food-101", "images");
-        return loadShard(defaultRoot, workerId, totalWorkers, DEFAULT_SEED);
+        return loadShard(workerId, totalWorkers, DEFAULT_SEED);
     }
 
-    /**
-     * Loads a worker shard from the provided dataset root using deterministic shuffling.
-     */
-    public List<Sample> loadShard(Path datasetRoot, int workerId, int totalWorkers, long seed) throws IOException {
-        if (datasetRoot == null) {
-            throw new IllegalArgumentException("datasetRoot must not be null");
-        }
+    public List<Sample> loadShard(int workerId, int totalWorkers, long seed) throws IOException {
         if (workerId < 0 || totalWorkers <= 0 || workerId >= totalWorkers) {
             throw new IllegalArgumentException("Invalid shard args: workerId=" + workerId + ", totalWorkers=" + totalWorkers);
         }
-        if (!Files.isDirectory(datasetRoot)) {
-            throw new IOException("Dataset root not found: " + datasetRoot.toAbsolutePath());
+
+        Path dataDir = Path.of("data/cifar-10-batches-bin");
+        if (!Files.isDirectory(dataDir)) {
+            throw new IOException("CIFAR-10 binary data not found at: " + dataDir.toAbsolutePath());
         }
 
-        List<Path> imagePaths = discoverImages(datasetRoot);
-        if (imagePaths.isEmpty()) {
-            return List.of();
+        // First pass: count total samples
+        int totalSamples = 0;
+        for (int batch = 1; batch <= 5; batch++) {
+            Path batchFile = dataDir.resolve("data_batch_" + batch + ".bin");
+            totalSamples += (int) (Files.size(batchFile) / 3073);
         }
 
-        Collections.shuffle(imagePaths, new java.util.Random(seed));
-        Map<String, Integer> labelMap = buildLabelMap(imagePaths);
+        // Build deterministic index list and shuffle, then pick this worker's indices
+        List<Integer> indices = new ArrayList<>(totalSamples);
+        for (int i = 0; i < totalSamples; i++) {
+            indices.add(i);
+        }
+        Collections.shuffle(indices, new Random(seed));
 
-        List<Sample> shard = new ArrayList<>();
-        for (int i = 0; i < imagePaths.size(); i++) {
-            if (i % totalWorkers != workerId) {
-                continue;
+        // Only keep this worker's indices, sort them for sequential file access
+        java.util.Set<Integer> myIndices = new java.util.HashSet<>();
+        for (int i = workerId; i < totalSamples; i += totalWorkers) {
+            myIndices.add(indices.get(i));
+        }
+
+        // Second pass: read only needed samples
+        List<Sample> shard = new ArrayList<>(myIndices.size());
+        int globalIdx = 0;
+        for (int batch = 1; batch <= 5; batch++) {
+            Path batchFile = dataDir.resolve("data_batch_" + batch + ".bin");
+            try (DataInputStream dis = new DataInputStream(
+                    new BufferedInputStream(Files.newInputStream(batchFile)))) {
+                while (dis.available() >= 3073) {
+                    int label = dis.readUnsignedByte();
+                    if (myIndices.contains(globalIdx)) {
+                        double[] pixels = new double[3072];
+                        for (int i = 0; i < 3072; i++) {
+                            pixels[i] = dis.readUnsignedByte() / 255.0;
+                        }
+                        shard.add(new Sample(pixels, label, null));
+                    } else {
+                        dis.skipBytes(3072);
+                    }
+                    globalIdx++;
+                }
             }
-            Path imagePath = imagePaths.get(i);
-            String className = imagePath.getParent().getFileName().toString();
-            Integer label = labelMap.get(className);
-            if (label == null) {
-                throw new IOException("Missing label for class: " + className);
-            }
-            double[] pixels = loadAndNormalize(imagePath);
-            shard.add(new Sample(pixels, label, imagePath));
         }
         return shard;
-    }
-
-    private static List<Path> discoverImages(Path datasetRoot) throws IOException {
-        List<Path> imagePaths = new ArrayList<>();
-        try (var stream = Files.walk(datasetRoot)) {
-            stream
-                .filter(Files::isRegularFile)
-                .filter(DataLoader::isSupportedImage)
-                .forEach(imagePaths::add);
-        }
-        imagePaths.sort(Comparator.comparing(Path::toString));
-        return imagePaths;
-    }
-
-    private static boolean isSupportedImage(Path path) {
-        String fileName = path.getFileName().toString();
-        int dot = fileName.lastIndexOf('.');
-        if (dot <= 0 || dot == fileName.length() - 1) {
-            return false;
-        }
-        String ext = fileName.substring(dot + 1).toLowerCase(Locale.ROOT);
-        return SUPPORTED_EXTENSIONS.contains(ext);
-    }
-
-    private static Map<String, Integer> buildLabelMap(List<Path> imagePaths) {
-        Set<String> labels = new HashSet<>();
-        for (Path p : imagePaths) {
-            labels.add(p.getParent().getFileName().toString());
-        }
-        List<String> sortedLabels = new ArrayList<>(labels);
-        sortedLabels.sort(String::compareTo);
-
-        Map<String, Integer> labelMap = new HashMap<>();
-        for (int i = 0; i < sortedLabels.size(); i++) {
-            labelMap.put(sortedLabels.get(i), i);
-        }
-        return labelMap;
-    }
-
-    private static double[] loadAndNormalize(Path imagePath) throws IOException {
-        BufferedImage original = ImageIO.read(imagePath.toFile());
-        if (original == null) {
-            throw new IOException("Unsupported image format: " + imagePath);
-        }
-
-        BufferedImage resized = new BufferedImage(TARGET_WIDTH, TARGET_HEIGHT, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = resized.createGraphics();
-        try {
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-            g.drawImage(original, 0, 0, TARGET_WIDTH, TARGET_HEIGHT, null);
-        } finally {
-            g.dispose();
-        }
-
-        double[] pixels = new double[INPUT_SIZE];
-        int idx = 0;
-        for (int y = 0; y < TARGET_HEIGHT; y++) {
-            for (int x = 0; x < TARGET_WIDTH; x++) {
-                int rgb = resized.getRGB(x, y);
-                int r = (rgb >> 16) & 0xFF;
-                int green = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
-
-                pixels[idx++] = r / 255.0;
-                pixels[idx++] = green / 255.0;
-                pixels[idx++] = b / 255.0;
-            }
-        }
-        return pixels;
     }
 }

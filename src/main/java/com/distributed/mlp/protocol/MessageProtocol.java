@@ -58,11 +58,12 @@ public final class MessageProtocol {
         out.writeInt(type);
     }
 
-    private static boolean isValidType(int type) {
+    public static boolean isValidType(int type) {
         return type == PULL_REQUEST
-                || type == WEIGHT_RESPONSE
-                || type == PUSH_GRADIENT
-                || type == SHUTDOWN;
+            || type == WEIGHT_RESPONSE
+            || type == PUSH_GRADIENT
+            || type == SHUTDOWN;
+
     }
 
     /**

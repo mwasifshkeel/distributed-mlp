@@ -22,3 +22,9 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.swp
+
+results/
+
+PROJECT.md
+
+*.sh
