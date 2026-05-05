@@ -1,6 +1,5 @@
 package com.distributed.mlp.bench;
 
-import com.distributed.mlp.baseline.SequentialBaseline;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -11,6 +10,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+
+import com.distributed.mlp.baseline.SequentialBaseline;
 
 /**
  * Orchestrates benchmark runs for sequential and async distributed modes and
@@ -32,10 +33,11 @@ public final class BenchmarkRunner {
     private BenchmarkRunner() {
     }
 
-    public static void main(String[] args) {
+     public static void main(String[] args) {
         try {
+            System.out.println("[BenchmarkRunner] Starting full benchmark suite...");
             runBenchmarks();
-            System.out.println("Benchmark run complete. CSV written: " + RAW_CSV.toAbsolutePath());
+            System.out.println("Benchmark complete. CSV written: " + RAW_CSV.toAbsolutePath());
         } catch (Exception e) {
             System.err.println("BenchmarkRunner failed: " + e.getMessage());
             e.printStackTrace(System.err);
@@ -43,22 +45,18 @@ public final class BenchmarkRunner {
         }
     }
 
-    /**
-     * Runs all benchmark configurations and writes rows in the expected schema:
-     * mode,workers,threads,input_size,epoch,wall_sec,loss,accuracy
-     */
     public static void runBenchmarks() throws Exception {
         Files.createDirectories(RESULTS_DIR);
         initRawCsv();
 
         for (int inputSize : INPUT_SIZES) {
+            System.out.printf("[BenchmarkRunner] Sequential baseline (input=%d, epochs=%d)%n", inputSize, EPOCHS);
             List<EpochResult> seqEpochs = runSequential(inputSize, EPOCHS);
             appendRows("sequential", 1, 1, inputSize, seqEpochs);
 
             for (int workers : WORKER_CONFIGS) {
-                if (workers == 1) {
-                    continue;
-                }
+                if (workers == 1) continue;
+                System.out.printf("[BenchmarkRunner] Async SGD (workers=%d, input=%d, epochs=%d)%n", workers, inputSize, EPOCHS);
                 int threadsPerWorker = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
                 List<EpochResult> asyncEpochs = runAsyncSgd(workers, inputSize, EPOCHS, BASE_SEED + inputSize);
                 appendRows("async_sgd", workers, threadsPerWorker, inputSize, asyncEpochs);
@@ -107,7 +105,10 @@ public final class BenchmarkRunner {
             Process master = startJavaProcess(List.of(
                     "com.distributed.mlp.Master",
                     String.valueOf(MASTER_PORT),
-                    String.valueOf(workers)));
+                    String.valueOf(workers),
+                    String.valueOf(steps),
+                    String.valueOf(seed + epoch),
+                    "false"));
 
             Thread.sleep(1500L);
 

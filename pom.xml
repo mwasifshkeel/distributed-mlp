@@ -1,21 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.distributed</groupId>
-    <artifactId>distributed-mlp</artifactId>
+    <artifactId>distributed-mlp-gui</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-    <name>distributed-mlp</name>
-    <description>Distributed MLP Training on Food-101 for CS-347 Parallel &amp; Distributed Computing.</description>
     <packaging>jar</packaging>
 
     <properties>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <javafx.version>21.0.2</javafx.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+
+    <dependencies>
+        <!-- JavaFX Controls (charts, UI components) -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+
+        <!-- JavaFX FXML (optional, for future use) -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-fxml</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+
+        <!-- JavaFX Swing interop (optional, for pixel canvas) -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-swing</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+
+        <!-- Your existing MLP project on the classpath -->
+        <!-- Either add it as a system dependency or build both in the same Maven reactor -->
+        <!--
+        <dependency>
+            <groupId>com.distributed</groupId>
+            <artifactId>distributed-mlp</artifactId>
+            <version>0.1.0-SNAPSHOT</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/../target/distributed-mlp-0.1.0-SNAPSHOT.jar</systemPath>
+        </dependency>
+        -->
+    </dependencies>
 
     <build>
         <plugins>
@@ -27,6 +61,52 @@
                     <release>17</release>
                 </configuration>
             </plugin>
+
+            <!-- JavaFX Maven plugin for easy launch -->
+            <plugin>
+                <groupId>org.openjfx</groupId>
+                <artifactId>javafx-maven-plugin</artifactId>
+                <version>0.0.8</version>
+                <configuration>
+                    <mainClass>com.distributed.mlp.gui.MLPDashboard</mainClass>
+                    <!-- Merged classpath: GUI classes + main project classes -->
+                    <commandlineArgs>
+                        -cp target/classes:../target/classes
+                    </commandlineArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Fat JAR for standalone launch -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.distributed.mlp.gui.MLPDashboard</mainClass>
+                                </transformer>
+                            </transformers>
+                            <!-- JavaFX cannot be shaded — use module path at runtime -->
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>org.openjfx:*</exclude>
+                                </excludes>
+                            </artifactSet>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
+
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+        </resources>
     </build>
 </project>

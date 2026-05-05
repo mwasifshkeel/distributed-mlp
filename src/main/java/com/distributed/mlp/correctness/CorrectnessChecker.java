@@ -4,6 +4,8 @@ import com.distributed.mlp.data.DataLoader;
 import com.distributed.mlp.data.DataLoader.Sample;
 import com.distributed.mlp.model.MLPModel;
 import com.distributed.mlp.model.MathUtils;
+import com.distributed.mlp.protocol.WeightSerializer;   // new import
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,6 +18,9 @@ import java.util.Locale;
 /**
  * Verifies deterministic correctness by comparing sequential and single-worker
  * distributed-equivalent predictions/loss on the same subset and seed.
+ * <p>
+ * After the check, the trained model (from the sequential evaluation) is saved
+ * to {@code results/correctness_model.bin}.
  */
 public final class CorrectnessChecker {
     private static final int SUBSET_SIZE = 1_000;
@@ -27,6 +32,8 @@ public final class CorrectnessChecker {
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 1;
     private static final int DEFAULT_STEPS = 16;
+
+    private static final Path MODEL_PATH = Path.of("results", "correctness_model.bin");
 
     private CorrectnessChecker() {
     }
@@ -47,7 +54,9 @@ public final class CorrectnessChecker {
 
     public static boolean run() throws Exception {
         List<Sample> subset = loadSubset(SUBSET_SIZE);
+        System.out.printf("[CorrectnessChecker] Using %d samples for validation.%n", subset.size());
 
+        // Run sequential evaluation (this also builds the final trained model)
         EvalResult sequential = evaluateSequential(subset, EPOCHS, SEED);
         EvalResult distributedEq = evaluateDistributedEquivalent(subset, EPOCHS, SEED);
 
@@ -70,18 +79,25 @@ public final class CorrectnessChecker {
                 LOSS_TOLERANCE,
                 distributedSmokeOk ? "ok" : "failed");
 
+        // Save the trained model from the sequential evaluation
+        saveModel(sequential.model());
         return diffCount == 0 && lossOk && distributedSmokeOk;
     }
 
     private static List<Sample> loadSubset(int subsetSize) throws IOException {
+        System.out.println("[CorrectnessChecker] Loading dataset...");
         DataLoader loader = new DataLoader();
         List<Sample> all = loader.loadShard(0, 1);
         if (all.isEmpty()) {
-            throw new IOException("Dataset is empty. Check data/food-101/images path.");
+            throw new IOException("Dataset is empty. Check data/cifar-10-batches-bin/ path.");
         }
+        System.out.printf("[CorrectnessChecker] Loaded %d total samples, will use %d.%n",
+                all.size(), subsetSize);
         int end = Math.min(subsetSize, all.size());
         return new ArrayList<>(all.subList(0, end));
     }
+
+    // ------------------ internal evaluations ------------------
 
     private static EvalResult evaluateSequential(List<Sample> samples, int epochs, long seed) {
         return evaluateDeterministic(samples, epochs, seed);
@@ -118,7 +134,8 @@ public final class CorrectnessChecker {
                     finalLoss);
         }
 
-        return new EvalResult(new ArrayList<>(finalPredictions), finalLoss);
+        // Return the trained model along with predictions and loss
+        return new EvalResult(new ArrayList<>(finalPredictions), finalLoss, model);
     }
 
     private static int countPredictionDiffs(List<Integer> a, List<Integer> b) {
@@ -144,6 +161,71 @@ public final class CorrectnessChecker {
         }
         return bestIdx;
     }
+
+    // ------------------ model saving (reflection) ------------------
+
+    private static void saveModel(MLPModel model) {
+        try {
+            double[] flat = flattenModelWeights(model);
+            byte[] serialized = WeightSerializer.toBytesDouble(flat);
+            Files.createDirectories(MODEL_PATH.getParent());
+            Files.write(MODEL_PATH, serialized);
+            System.out.printf("[CorrectnessChecker] Model saved to %s (%,d bytes)%n",
+                    MODEL_PATH.toAbsolutePath(), serialized.length);
+        } catch (IOException e) {
+            System.err.println("[CorrectnessChecker] Failed to save model: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Uses reflection to flatten the private weight arrays of MLPModel.
+     */
+    private static double[] flattenModelWeights(MLPModel model) {
+        try {
+            java.lang.reflect.Field w1 = MLPModel.class.getDeclaredField("w1");
+            java.lang.reflect.Field b1 = MLPModel.class.getDeclaredField("b1");
+            java.lang.reflect.Field w2 = MLPModel.class.getDeclaredField("w2");
+            java.lang.reflect.Field b2 = MLPModel.class.getDeclaredField("b2");
+            java.lang.reflect.Field w3 = MLPModel.class.getDeclaredField("w3");
+            java.lang.reflect.Field b3 = MLPModel.class.getDeclaredField("b3");
+
+            w1.setAccessible(true);
+            b1.setAccessible(true);
+            w2.setAccessible(true);
+            b2.setAccessible(true);
+            w3.setAccessible(true);
+            b3.setAccessible(true);
+
+            double[][] W1 = (double[][]) w1.get(model);
+            double[]   B1 = (double[])   b1.get(model);
+            double[][] W2 = (double[][]) w2.get(model);
+            double[]   B2 = (double[])   b2.get(model);
+            double[][] W3 = (double[][]) w3.get(model);
+            double[]   B3 = (double[])   b3.get(model);
+
+            int total = MLPModel.INPUT_DIM  * MLPModel.HIDDEN1_DIM
+                      + MLPModel.HIDDEN1_DIM
+                      + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+                      + MLPModel.HIDDEN2_DIM
+                      + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+                      + MLPModel.OUTPUT_DIM;
+
+            double[] flat = new double[total];
+            int idx = 0;
+            for (double[] row : W1) for (double v : row) flat[idx++] = v;
+            for (double v : B1) flat[idx++] = v;
+            for (double[] row : W2) for (double v : row) flat[idx++] = v;
+            for (double v : B2) flat[idx++] = v;
+            for (double[] row : W3) for (double v : row) flat[idx++] = v;
+            for (double v : B3) flat[idx++] = v;
+
+            return flat;
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new RuntimeException("Cannot access model weights – ensure MLPModel fields are accessible.", e);
+        }
+    }
+
+    // ------------------ distributed smoke test ------------------
 
     private static boolean runDistributedSmoke(long seed) {
         Path classes = Path.of("target", "classes");
@@ -226,6 +308,8 @@ public final class CorrectnessChecker {
         return classes.toString();
     }
 
-    private record EvalResult(List<Integer> predictions, double finalLoss) {
+    // ------------------ result record ------------------
+
+    private record EvalResult(List<Integer> predictions, double finalLoss, MLPModel model) {
     }
 }

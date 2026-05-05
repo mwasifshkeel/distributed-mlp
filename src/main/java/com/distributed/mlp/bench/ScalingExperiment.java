@@ -1,6 +1,5 @@
 package com.distributed.mlp.bench;
 
-import com.distributed.mlp.baseline.SequentialBaseline;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -12,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+
+import com.distributed.mlp.baseline.SequentialBaseline;
 
 /**
  * Runs strong and weak scaling experiments for distributed training and writes
@@ -36,12 +37,14 @@ public final class ScalingExperiment {
     private ScalingExperiment() {
     }
 
+
     public static void main(String[] args) {
         try {
+            System.out.println("[ScalingExperiment] Starting strong & weak scaling...");
             run();
             System.out.println("Scaling experiments complete.");
-            System.out.println("Wrote: " + STRONG_CSV.toAbsolutePath());
-            System.out.println("Wrote: " + WEAK_CSV.toAbsolutePath());
+            System.out.println("  Strong scaling CSV: " + STRONG_CSV.toAbsolutePath());
+            System.out.println("  Weak scaling CSV  : " + WEAK_CSV.toAbsolutePath());
         } catch (Exception e) {
             System.err.println("ScalingExperiment failed: " + e.getMessage());
             e.printStackTrace(System.err);
@@ -136,7 +139,10 @@ public final class ScalingExperiment {
             Process master = startJavaProcess(List.of(
                     "com.distributed.mlp.Master",
                     String.valueOf(MASTER_PORT),
-                    String.valueOf(workers)));
+                    String.valueOf(workers),
+                    String.valueOf(steps),
+                    String.valueOf(BASE_SEED + inputSize + epoch),
+                    "false"));
 
             Thread.sleep(1500L);
 

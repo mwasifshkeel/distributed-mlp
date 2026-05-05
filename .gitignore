@@ -16,8 +16,13 @@ target/
 .DS_Store
 Thumbs.db
 
+resources/
+
+gui/
+
 # Java build artifacts
 *.class
+GUI_PROJECT.md
 
 # Temporary files
 *.tmp

@@ -44,6 +44,7 @@ public final class Master {
     private final int    targetUpdates;
     private final int    stepsPerWorker;
     private final long   baseSeed;
+    private final boolean enableCheckpoints;
 
     private final AtomicInteger  totalUpdates      = new AtomicInteger(0);
     private final AtomicBoolean  shutdownInitiated = new AtomicBoolean(false);
@@ -61,10 +62,14 @@ public final class Master {
     // ── constructors ──────────────────────────────────────────────────────
 
     public Master(int port, int expectedWorkers) {
-        this(port, expectedWorkers, DEFAULT_STEPS, DEFAULT_SEED);
+        this(port, expectedWorkers, DEFAULT_STEPS, DEFAULT_SEED, true);
     }
 
     public Master(int port, int expectedWorkers, int stepsPerWorker, long baseSeed) {
+        this(port, expectedWorkers, stepsPerWorker, baseSeed, true);
+    }
+
+    public Master(int port, int expectedWorkers, int stepsPerWorker, long baseSeed, boolean enableCheckpoints) {
         this.port            = port;
         this.expectedWorkers = expectedWorkers;
         this.learningRate    = DEFAULT_LEARNING_RATE;
@@ -72,6 +77,7 @@ public final class Master {
         this.targetUpdates   = expectedWorkers * stepsPerWorker;
         this.stepsPerWorker  = stepsPerWorker;
         this.baseSeed        = baseSeed;
+        this.enableCheckpoints = enableCheckpoints;
         this.liveWorkers     = new AtomicInteger(0); // incremented as handlers register
         this.workerReplacer  = new WorkerReplacer(
                 "127.0.0.1", port, expectedWorkers, stepsPerWorker, baseSeed);
@@ -82,8 +88,9 @@ public final class Master {
         int  workers = args.length >= 2 ? Integer.parseInt(args[1]) : DEFAULT_WORKERS;
         int  steps   = args.length >= 3 ? Integer.parseInt(args[2]) : DEFAULT_STEPS;
         long seed    = args.length >= 4 ? Long.parseLong(args[3])   : DEFAULT_SEED;
+        boolean enableCheckpoints = args.length < 5 || Boolean.parseBoolean(args[4]);
 
-        Master master = new Master(port, workers, steps, seed);
+        Master master = new Master(port, workers, steps, seed, enableCheckpoints);
         try {
             master.start();
         } catch (IOException e) {
@@ -95,24 +102,28 @@ public final class Master {
     // ── start ─────────────────────────────────────────────────────────────
 
     public void start() throws IOException {
-        // Restore from checkpoint if one exists
-        try {
-            Path latest = Checkpoint.findLatest();
-            if (latest != null) {
-                double[] restored = Checkpoint.load(latest);
-                if (restored.length == globalWeights.length) {
-                    System.arraycopy(restored, 0, globalWeights, 0, restored.length);
-                    int resumeAt = Checkpoint.extractUpdate(latest);
-                    totalUpdates.set(resumeAt);
-                    System.out.printf("[Master] Resumed from checkpoint at update #%d%n", resumeAt);
+        if (enableCheckpoints) {
+            // Restore from checkpoint if one exists
+            try {
+                Path latest = Checkpoint.findLatest();
+                if (latest != null) {
+                    double[] restored = Checkpoint.load(latest);
+                    if (restored.length == globalWeights.length) {
+                        System.arraycopy(restored, 0, globalWeights, 0, restored.length);
+                        int resumeAt = Checkpoint.extractUpdate(latest);
+                        totalUpdates.set(resumeAt);
+                        System.out.printf("[Master] Resumed from checkpoint at update #%d%n", resumeAt);
+                    } else {
+                        System.err.println("[Master] Checkpoint size mismatch — starting fresh.");
+                    }
                 } else {
-                    System.err.println("[Master] Checkpoint size mismatch — starting fresh.");
+                    System.out.println("[Master] No checkpoint found — starting fresh.");
                 }
-            } else {
-                System.out.println("[Master] No checkpoint found — starting fresh.");
+            } catch (IOException e) {
+                System.err.println("[Master] Could not read checkpoint: " + e.getMessage());
             }
-        } catch (IOException e) {
-            System.err.println("[Master] Could not read checkpoint: " + e.getMessage());
+        } else {
+            System.out.println("[Master] Checkpointing disabled.");
         }
 
         workerReplacer.start();
@@ -225,7 +236,7 @@ public final class Master {
 
         int n = totalUpdates.incrementAndGet();
 
-        if (n % CHECKPOINT_EVERY == 0) {
+        if (enableCheckpoints && n % CHECKPOINT_EVERY == 0) {
             double[] snap = snapshotGlobalWeights();
             new Thread(() -> {
                 try { Checkpoint.save(snap, n); }
@@ -252,7 +263,7 @@ public final class Master {
         System.out.printf("[Master] Worker %d unregistered. Live workers: %d%n",
                 ch.workerId, remaining);
 
-        if (remaining == 0 && !shutdownInitiated.get()) {
+        if (enableCheckpoints && remaining == 0 && !shutdownInitiated.get()) {
             System.err.println("[Master] All workers disconnected unexpectedly — saving emergency checkpoint.");
             try { Checkpoint.save(snapshotGlobalWeights(), totalUpdates.get()); }
             catch (IOException e) {
@@ -261,11 +272,29 @@ public final class Master {
         }
     }
 
+    private void deleteAllCheckpoints() {
+        try {
+            java.nio.file.Path dir = java.nio.file.Path.of("results");
+            if (!java.nio.file.Files.exists(dir)) return;
+            try (var stream = java.nio.file.Files.newDirectoryStream(dir, "checkpoint_*.bin")) {
+                for (var p : stream) {
+                    java.nio.file.Files.deleteIfExists(p);
+                }
+            }
+            System.out.println("[Master] All checkpoints deleted.");
+        } catch (IOException e) {
+            System.err.println("[Master] Could not delete checkpoints: " + e.getMessage());
+        }
+    }
+
     private void broadcastShutdown() {
         saveWeights();
-        try { Checkpoint.save(snapshotGlobalWeights(), totalUpdates.get()); }
-        catch (IOException e) {
-            System.err.println("[Master] Final checkpoint failed: " + e.getMessage());
+        if (enableCheckpoints) {
+            deleteAllCheckpoints();
+            try { Checkpoint.save(snapshotGlobalWeights(), totalUpdates.get()); }
+            catch (IOException e) {
+                System.err.println("[Master] Final checkpoint failed: " + e.getMessage());
+            }
         }
 
         List<WorkerChannel> snapshot;
