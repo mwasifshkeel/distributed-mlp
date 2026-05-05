@@ -417,7 +417,7 @@ public final class Master {
                     workerId, payload.length);
         }
 
-       private void handlePushGradient(DataInputStream in, int payloadLen)
+        private void handlePushGradient(DataInputStream in, int payloadLen)
         throws IOException {
             if (payloadLen <= 0) {
                 System.err.printf("[Master] Worker %d empty gradient push.%n", workerId);
@@ -425,7 +425,18 @@ public final class Master {
             }
             byte[]   bytes    = new byte[payloadLen];
             in.readFully(bytes);
-            double[] gradient = WeightSerializer.fromBytesDouble(bytes);
+            int expectedDouble = TOTAL_PARAMETERS * Double.BYTES;
+            int expectedFloat = TOTAL_PARAMETERS * Float.BYTES;
+            double[] gradient;
+            if (payloadLen == expectedDouble) {
+                gradient = WeightSerializer.fromBytesDouble(bytes);
+            } else if (payloadLen == expectedFloat) {
+                gradient = WeightSerializer.fromBytesFloat(bytes);
+            } else {
+                System.err.printf("[Master] Worker %d gradient size mismatch: got=%d expected=%d/%d%n",
+                        workerId, payloadLen, expectedDouble, expectedFloat);
+                return;
+            }
             lastGradientPushMs = System.currentTimeMillis(); // ADD THIS
             int      n        = applyGradient(gradient);
             System.out.printf("[Master] Worker %d -> gradient applied (update #%d)%n",

@@ -29,7 +29,7 @@ public final class Inference {
         // Restore model
         MLPModel model = new MLPModel();
         model.initXavier(42); // initialise structure, then overwrite
-        loadWeightsIntoModel(model, weights);
+        model.loadWeights(weights);
         System.out.println("Model loaded. TOTAL_PARAMS=" + weights.length);
 
         // Load some test data (worker 0 of 1 = full dataset shard)
@@ -58,43 +58,6 @@ public final class Inference {
         double accuracy = 100.0 * correct / total;
         System.out.printf("%nAccuracy on %d samples: %d/%d = %.2f%%%n",
                 total, correct, total, accuracy);
-    }
-
-    private static void loadWeightsIntoModel(MLPModel model, double[] flat) {
-        int idx = 0;
-
-        // w1 [HIDDEN1_DIM][INPUT_DIM]
-        double[][] w1 = model.getW1();
-        for (double[] row : w1)
-            for (int j = 0; j < row.length; j++)
-                row[j] = flat[idx++];
-
-        // b1 [HIDDEN1_DIM]
-        double[] b1 = model.getB1();
-        for (int j = 0; j < b1.length; j++)
-            b1[j] = flat[idx++];
-
-        // w2 [HIDDEN2_DIM][HIDDEN1_DIM]
-        double[][] w2 = model.getW2();
-        for (double[] row : w2)
-            for (int j = 0; j < row.length; j++)
-                row[j] = flat[idx++];
-
-        // b2 [HIDDEN2_DIM]
-        double[] b2 = model.getB2();
-        for (int j = 0; j < b2.length; j++)
-            b2[j] = flat[idx++];
-
-        // w3 [OUTPUT_DIM][HIDDEN2_DIM]
-        double[][] w3 = model.getW3();
-        for (double[] row : w3)
-            for (int j = 0; j < row.length; j++)
-                row[j] = flat[idx++];
-
-        // b3 [OUTPUT_DIM]
-        double[] b3 = model.getB3();
-        for (int j = 0; j < b3.length; j++)
-            b3[j] = flat[idx++];
     }
 
     private static int argmax(double[] arr) {

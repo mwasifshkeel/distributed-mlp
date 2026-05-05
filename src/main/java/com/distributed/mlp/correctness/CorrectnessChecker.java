@@ -1,19 +1,20 @@
 package com.distributed.mlp.correctness;
 
-import com.distributed.mlp.data.DataLoader;
-import com.distributed.mlp.data.DataLoader.Sample;
-import com.distributed.mlp.model.MLPModel;
-import com.distributed.mlp.model.MathUtils;
-import com.distributed.mlp.protocol.WeightSerializer;   // new import
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
+import java.time.Instant;   // new import
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
+
+import com.distributed.mlp.data.DataLoader;
+import com.distributed.mlp.data.DataLoader.Sample;
+import com.distributed.mlp.model.MLPModel;
+import com.distributed.mlp.model.MathUtils;
+import com.distributed.mlp.protocol.WeightSerializer;
 
 /**
  * Verifies deterministic correctness by comparing sequential and single-worker
@@ -32,6 +33,7 @@ public final class CorrectnessChecker {
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 1;
     private static final int DEFAULT_STEPS = 16;
+    private static final Duration SMOKE_TIMEOUT = Duration.ofSeconds(30);
 
     private static final Path MODEL_PATH = Path.of("results", "correctness_model.bin");
 
@@ -240,7 +242,10 @@ public final class CorrectnessChecker {
             master = startJavaProcess(List.of(
                     "com.distributed.mlp.Master",
                     String.valueOf(DEFAULT_PORT),
-                    String.valueOf(DEFAULT_WORKERS)));
+                    String.valueOf(DEFAULT_WORKERS),
+                    String.valueOf(DEFAULT_STEPS),
+                    String.valueOf(seed),
+                    "false"));
 
             Thread.sleep(1200L);
 
@@ -254,9 +259,20 @@ public final class CorrectnessChecker {
                     String.valueOf(seed)));
 
             Instant t0 = Instant.now();
-            int masterCode = master.waitFor();
-            int workerCode = worker.waitFor();
+            boolean masterDone = master.waitFor(SMOKE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            boolean workerDone = worker.waitFor(SMOKE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            int masterCode = masterDone ? master.exitValue() : -1;
+            int workerCode = workerDone ? worker.exitValue() : -1;
             double wallSec = Duration.between(t0, Instant.now()).toMillis() / 1000.0;
+
+            if (!masterDone) {
+                System.err.println("[CorrectnessChecker] master timed out, destroying process");
+                master.destroyForcibly();
+            }
+            if (!workerDone) {
+                System.err.println("[CorrectnessChecker] worker timed out, destroying process");
+                worker.destroyForcibly();
+            }
 
             System.out.printf(
                     Locale.ROOT,

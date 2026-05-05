@@ -35,6 +35,45 @@ public class MLPModel {
     public double[][] getW3() { return w3; }
     public double[] getB3()   { return b3; }
 
+    public void loadWeights(double[] flat) {
+        if (flat == null) {
+            throw new IllegalArgumentException("flat must not be null");
+        }
+
+        int expected = INPUT_DIM * HIDDEN1_DIM
+                + HIDDEN1_DIM
+                + HIDDEN1_DIM * HIDDEN2_DIM
+                + HIDDEN2_DIM
+                + HIDDEN2_DIM * OUTPUT_DIM
+                + OUTPUT_DIM;
+        if (flat.length != expected) {
+            throw new IllegalArgumentException("Expected " + expected + " weights but got " + flat.length);
+        }
+
+        int idx = 0;
+
+        for (double[] row : w1)
+            for (int j = 0; j < row.length; j++)
+                row[j] = flat[idx++];
+
+        for (int j = 0; j < b1.length; j++)
+            b1[j] = flat[idx++];
+
+        for (double[] row : w2)
+            for (int j = 0; j < row.length; j++)
+                row[j] = flat[idx++];
+
+        for (int j = 0; j < b2.length; j++)
+            b2[j] = flat[idx++];
+
+        for (double[] row : w3)
+            for (int j = 0; j < row.length; j++)
+                row[j] = flat[idx++];
+
+        for (int j = 0; j < b3.length; j++)
+            b3[j] = flat[idx++];
+    }
+
     public double[] forward(double[] input) {
         if (input == null) throw new IllegalArgumentException("input must not be null");
         if (input.length != INPUT_DIM)

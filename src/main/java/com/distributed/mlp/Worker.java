@@ -7,6 +7,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -20,6 +21,7 @@ import com.distributed.mlp.data.DataLoader;
 import com.distributed.mlp.data.DataLoader.Sample;
 import com.distributed.mlp.model.MLPModel;
 import com.distributed.mlp.model.MLPModel.Gradient;
+import com.distributed.mlp.optimisation.GradientCompressor;
 import com.distributed.mlp.protocol.MessageProtocol;
 import com.distributed.mlp.protocol.MessageProtocol.ProtocolException;
 import com.distributed.mlp.protocol.WeightSerializer;
@@ -104,6 +106,13 @@ public final class Worker {
         AtomicBoolean stopFlag = new AtomicBoolean(false);
         ReentrantLock socketLock = new ReentrantLock();
 
+        boolean compressGradients = Boolean.parseBoolean(
+            System.getProperty("mlp.compressGradients", "false"));
+        int pullEvery = Integer.parseInt(System.getProperty("mlp.pullEvery", "1"));
+        if (pullEvery <= 0) {
+            throw new IllegalArgumentException("mlp.pullEvery must be > 0");
+        }
+
         System.out.printf("[Worker %d] Connecting to %s:%d ...%n", workerId, host, port);
         try (Socket socket = new Socket(host, port); 
         DataInputStream in = new DataInputStream(socket.getInputStream()); 
@@ -116,17 +125,23 @@ public final class Worker {
                     System.out.printf("[Worker %d] IO thread started%n", workerId);
                     try {
                         while (!stopFlag.get()) {
-                            int sampleIdx = enqueuedSamples.getAndIncrement();
+                            int sampleIdx = enqueuedSamples.get();
                             if (sampleIdx >= totalSamplesToEnqueue) {
                                 System.out.printf("[Worker %d] IO thread done (enqueued %d)%n",
                                         workerId, sampleIdx);
                                 return;
                             }
+
                             Sample sample = shard.get(sampleIdx % shard.size());
-                            sampleQueue.put(sample);
-                            if (sampleIdx % 500 == 0) {
+                            boolean offered = sampleQueue.offer(sample, 200, TimeUnit.MILLISECONDS);
+                            if (!offered) {
+                                continue;
+                            }
+
+                            int newCount = enqueuedSamples.incrementAndGet();
+                            if (newCount % 500 == 0) {
                                 System.out.printf("[Worker %d] IO enqueued %d/%d (queue size=%d)%n",
-                                        workerId, sampleIdx, totalSamplesToEnqueue, sampleQueue.size());
+                                        workerId, newCount, totalSamplesToEnqueue, sampleQueue.size());
                             }
                         }
                         System.out.printf("[Worker %d] IO thread stopped by stopFlag%n", workerId);
@@ -141,6 +156,7 @@ public final class Worker {
                 System.out.printf("[Worker %d] Compute thread started%n", workerId);
                 MLPModel localModel = new MLPModel();
                 localModel.initXavier(seed + workerId);
+                boolean weightsInitialized = false;
 
                 while (!stopFlag.get()) {
                     int batchIdx = nextBatch.getAndIncrement();
@@ -169,25 +185,30 @@ public final class Worker {
                             continue;
                         }
 
-                        // Pull weights
-                        System.out.printf("[Worker %d] Batch %d: pulling weights...%n",
-                                workerId, batchIdx + 1);
-                        socketLock.lock();
-                        try {
-                            sendPullRequest(out);
-                            boolean shutdown = readWeightResponseOrShutdown(in);
-                            if (shutdown) {
-                                stopFlag.set(true);
-                                System.out.printf("[Worker %d] SHUTDOWN received at batch %d%n",
-                                        workerId, batchIdx + 1);
-                                return;
+                        // Pull weights (lazy pull with always-on first pull)
+                        if (!weightsInitialized || GradientCompressor.shouldPullWeights(batchIdx, pullEvery)) {
+                            System.out.printf("[Worker %d] Batch %d: pulling weights...%n",
+                                    workerId, batchIdx + 1);
+                            socketLock.lock();
+                            try {
+                                sendPullRequest(out);
+                                byte[] payload = readWeightResponseOrShutdown(in);
+                                if (payload == null) {
+                                    stopFlag.set(true);
+                                    System.out.printf("[Worker %d] SHUTDOWN received at batch %d%n",
+                                            workerId, batchIdx + 1);
+                                    return;
+                                }
+                                double[] weights = WeightSerializer.fromBytesDouble(payload);
+                                localModel.loadWeights(weights);
+                                weightsInitialized = true;
+                            } finally {
+                                socketLock.unlock();
                             }
-                        } finally {
-                            socketLock.unlock();
+                            System.out.printf("[Worker %d] Batch %d: weights pulled (%.0fms so far)%n",
+                                    workerId, batchIdx + 1,
+                                    (double) (System.currentTimeMillis() - batchStart));
                         }
-                        System.out.printf("[Worker %d] Batch %d: weights pulled (%.0fms so far)%n",
-                                workerId, batchIdx + 1,
-                                (double) (System.currentTimeMillis() - batchStart));
 
                         // Forward + backward
                         System.out.printf("[Worker %d] Batch %d: running forward/backward on %d samples...%n",
@@ -227,7 +248,9 @@ public final class Worker {
                                 (double) (System.currentTimeMillis() - batchStart));
 
                         // Push gradient
-                        byte[] payload = WeightSerializer.toBytesDouble(batchGradient);
+                        byte[] payload = compressGradients
+                            ? GradientCompressor.compressToFloat32(batchGradient)
+                            : WeightSerializer.toBytesDouble(batchGradient);
                         System.out.printf("[Worker %d] Batch %d: pushing gradient (%d bytes)...%n",
                                 workerId, batchIdx + 1, payload.length);
                         socketLock.lock();
@@ -247,6 +270,11 @@ public final class Worker {
                         return;
                     } catch (IOException | ProtocolException e) {
                         stopFlag.set(true);
+                        if (isSocketClosed(e)) {
+                            System.err.printf("[Worker %d] Socket closed during push/pull, exiting cleanly.%n",
+                                    workerId);
+                            return;
+                        }
                         System.err.printf("[Worker %d] IO/Protocol ERROR: %s%n", workerId, e.getMessage());
                         e.printStackTrace(System.err);
                         throw new RuntimeException(e);
@@ -300,7 +328,7 @@ public final class Worker {
         out.flush();
     }
 
-    private static boolean readWeightResponseOrShutdown(DataInputStream in) throws IOException, ProtocolException {
+    private static byte[] readWeightResponseOrShutdown(DataInputStream in) throws IOException, ProtocolException {
         int[] header = MessageProtocol.readHeader(in);
         int payloadLength = header[0] - MessageProtocol.HEADER_SIZE;
         int type = header[1];
@@ -309,7 +337,7 @@ public final class Worker {
             if (payloadLength > 0) {
                 in.skipNBytes(payloadLength);
             }
-            return true;
+            return null;
         }
         if (type != MessageProtocol.WEIGHT_RESPONSE) {
             if (payloadLength > 0) {
@@ -320,7 +348,7 @@ public final class Worker {
         }
         byte[] payload = new byte[payloadLength];
         in.readFully(payload);
-        return false;
+        return payload;
     }
 
     private static void sendPushGradient(DataOutputStream out, byte[] gradientPayload)
@@ -382,5 +410,20 @@ public final class Worker {
             dst[idx++] = value;
         }
         return idx;
+    }
+
+    private static boolean isSocketClosed(Exception e) {
+        if (e instanceof java.io.EOFException) {
+            return true;
+        }
+        if (e instanceof SocketException) {
+            return true;
+        }
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase(Locale.ROOT);
+        return lower.contains("broken pipe")
+                || lower.contains("connection reset")
+                || lower.contains("socket closed");
     }
 }
