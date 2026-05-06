@@ -1,0 +1,4 @@
+method,avg_ms,payload_bytes,array_size,rounds
+ObjectOutputStream,8.365002,4000027,500000,5
+ByteBuffer,0.993969,4000000,500000,5
+speedup_object_over_bytebuffer,8.415757,-1,500000,5

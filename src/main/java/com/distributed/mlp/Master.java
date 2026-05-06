@@ -411,7 +411,11 @@ public final class Master {
 
         private void handlePullRequest(WorkerChannel ch)
                 throws IOException, ProtocolException {
-            byte[] payload = WeightSerializer.toBytesDouble(snapshotGlobalWeights());
+            boolean compress = Boolean.parseBoolean(
+                System.getProperty("mlp.compressGradients", "false"));
+            byte[] payload = compress
+                ? WeightSerializer.toBytesFloat(snapshotGlobalWeights())
+                : WeightSerializer.toBytesDouble(snapshotGlobalWeights());
             ch.sendWeightResponse(payload);
             System.out.printf("[Master] Worker %d <- WEIGHT_RESPONSE (%d bytes)%n",
                     workerId, payload.length);

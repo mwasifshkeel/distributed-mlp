@@ -34,7 +34,7 @@ public final class Worker {
     private static final int DEFAULT_TOTAL_WORKERS = 3;
     private static final int DEFAULT_STEPS = 100;
     private static final long DEFAULT_SEED = 42L;
-    private static final int IO_THREADS = 1;
+    private static final int DEFAULT_IO_THREADS = 1;
     private static final int QUEUE_CAPACITY = 256;
     private static final int MINI_BATCH_SIZE = 32;
 
@@ -91,13 +91,18 @@ public final class Worker {
                 + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM + MLPModel.OUTPUT_DIM);
 
         BlockingQueue<Sample> sampleQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
-        // Force single compute thread to avoid nextBatch race exhausting steps instantly
-        int computeThreads = 1;
+        int computeThreads = Integer.parseInt(System.getProperty(
+            "mlp.computeThreads",
+            String.valueOf(Math.max(1, Runtime.getRuntime().availableProcessors() - 1))));
+        int ioThreads = Integer.parseInt(System.getProperty(
+            "mlp.ioThreads",
+            String.valueOf(DEFAULT_IO_THREADS)));
         System.out.printf("[Worker %d] Using %d compute thread(s), %d IO thread(s)%n",
-                workerId, computeThreads, IO_THREADS);
+            workerId, computeThreads, ioThreads);
 
-        ExecutorService ioPool = Executors.newFixedThreadPool(IO_THREADS);
-        ExecutorService computePool = Executors.newFixedThreadPool(computeThreads);
+        ExecutorService ioPool = Executors.newFixedThreadPool(ioThreads);
+        ExecutorService computePool = Executors.newFixedThreadPool(1);
+        ExecutorService batchPool = Executors.newFixedThreadPool(computeThreads);
 
         int totalSamplesToEnqueue = steps * MINI_BATCH_SIZE;
         AtomicInteger enqueuedSamples = new AtomicInteger(0);
@@ -109,6 +114,8 @@ public final class Worker {
         boolean compressGradients = Boolean.parseBoolean(
             System.getProperty("mlp.compressGradients", "false"));
         int pullEvery = Integer.parseInt(System.getProperty("mlp.pullEvery", "1"));
+        boolean verboseSamples = Boolean.parseBoolean(
+            System.getProperty("mlp.verboseSamples", "false"));
         if (pullEvery <= 0) {
             throw new IllegalArgumentException("mlp.pullEvery must be > 0");
         }
@@ -120,7 +127,7 @@ public final class Worker {
             System.out.printf("[Worker %d] Connected. Starting IO and compute pools. steps=%d totalSamplesToEnqueue=%d%n",
                     workerId, steps, totalSamplesToEnqueue);
             // IO thread: just feeds the queue
-            for (int i = 0; i < IO_THREADS; i++) {
+            for (int i = 0; i < ioThreads; i++) {
                 ioPool.submit(() -> {
                     System.out.printf("[Worker %d] IO thread started%n", workerId);
                     try {
@@ -199,7 +206,7 @@ public final class Worker {
                                             workerId, batchIdx + 1);
                                     return;
                                 }
-                                double[] weights = WeightSerializer.fromBytesDouble(payload);
+                                double[] weights = decodeWeights(payload);
                                 localModel.loadWeights(weights);
                                 weightsInitialized = true;
                             } finally {
@@ -213,31 +220,9 @@ public final class Worker {
                         // Forward + backward
                         System.out.printf("[Worker %d] Batch %d: running forward/backward on %d samples...%n",
                                 workerId, batchIdx + 1, miniBatch.size());
-                        double[] batchGradient = null;
-                        int sampleNum = 0;
-                        for (Sample sample : miniBatch) {
-                            sampleNum++;
-                            System.out.printf("[Worker %d] Batch %d: forward sample %d/%d%n",
-                                    workerId, batchIdx + 1, sampleNum, miniBatch.size());
-                            try {
-                                double[] probs = localModel.forward(sample.pixels());
-                                System.out.printf("[Worker %d] Batch %d: backward sample %d/%d%n",
-                                        workerId, batchIdx + 1, sampleNum, miniBatch.size());
-                                Gradient grad = localModel.backward(sample.pixels(), sample.label());
-                                double[] flatGrad = flattenGradient(grad);
-                                if (batchGradient == null) {
-                                    batchGradient = new double[flatGrad.length];
-                                }
-                                for (int g = 0; g < flatGrad.length; g++) {
-                                    batchGradient[g] += flatGrad[g];
-                                }
-                            } catch (Exception e) {
-                                System.err.printf("[Worker %d] ERROR on sample %d (label=%d, pixels.length=%d): %s%n",
-                                        workerId, sampleNum, sample.label(), sample.pixels().length, e.getMessage());
-                                e.printStackTrace(System.err);
-                                throw e;
-                            }
-                        }
+                        double[] batchGradient = computeBatchGradientParallel(
+                            localModel, miniBatch, batchPool, computeThreads,
+                            verboseSamples, workerId, batchIdx + 1);
 
                         double scale = 1.0 / miniBatch.size();
                         for (int g = 0; g < batchGradient.length; g++) {
@@ -296,12 +281,15 @@ public final class Worker {
             System.out.printf("[Worker %d] Waiting for pools to finish...%n", workerId);
             boolean ioDone = ioPool.awaitTermination(1, TimeUnit.HOURS);
             boolean computeDone = computePool.awaitTermination(1, TimeUnit.HOURS);
+            batchPool.shutdown();
+            boolean batchDone = batchPool.awaitTermination(1, TimeUnit.HOURS);
             if (!ioDone || !computeDone) {
-                System.err.printf("[Worker %d] Pools timed out! ioDone=%s computeDone=%s%n",
-                        workerId, ioDone, computeDone);
+                System.err.printf("[Worker %d] Pools timed out! ioDone=%s computeDone=%s batchDone=%s%n",
+                        workerId, ioDone, computeDone, batchDone);
                 stopFlag.set(true);
                 ioPool.shutdownNow();
                 computePool.shutdownNow();
+                batchPool.shutdownNow();
             }
             System.out.printf("[Worker %d] All done. Completed %d batches.%n",
                     workerId, completedBatches.get());
@@ -351,6 +339,25 @@ public final class Worker {
         return payload;
     }
 
+    private static double[] decodeWeights(byte[] payload) {
+        int expectedDouble = MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
+                + MLPModel.HIDDEN1_DIM
+                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+                + MLPModel.HIDDEN2_DIM
+                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+                + MLPModel.OUTPUT_DIM;
+        int doubleBytes = expectedDouble * Double.BYTES;
+        int floatBytes = expectedDouble * Float.BYTES;
+
+        if (payload.length == floatBytes) {
+            return WeightSerializer.fromBytesFloat(payload);
+        }
+        if (payload.length == doubleBytes) {
+            return WeightSerializer.fromBytesDouble(payload);
+        }
+        throw new IllegalArgumentException("Unexpected weight payload size: " + payload.length);
+    }
+
     private static void sendPushGradient(DataOutputStream out, byte[] gradientPayload)
             throws IOException, ProtocolException {
         MessageProtocol.writeHeader(out, MessageProtocol.PUSH_GRADIENT, gradientPayload.length);
@@ -394,6 +401,74 @@ public final class Worker {
         idx = flatten2D(gradient.getDW3(), flat, idx);
         flatten1D(gradient.getDb3(), flat, idx);
         return flat;
+    }
+
+    private static double[] computeBatchGradientParallel(
+            MLPModel model,
+            List<Sample> miniBatch,
+            ExecutorService batchPool,
+            int computeThreads,
+            boolean verboseSamples,
+            int workerId,
+            int batchNumber) throws Exception {
+
+        int threads = Math.max(1, Math.min(miniBatch.size(), computeThreads));
+        int chunkSize = (int) Math.ceil((double) miniBatch.size() / threads);
+
+        List<java.util.concurrent.Callable<double[]>> tasks = new ArrayList<>();
+        for (int t = 0; t < threads; t++) {
+            int start = t * chunkSize;
+            int end = Math.min(miniBatch.size(), start + chunkSize);
+            if (start >= end) break;
+
+            tasks.add(() -> {
+                double[] partial = null;
+                for (int i = start; i < end; i++) {
+                    Sample sample = miniBatch.get(i);
+                    if (verboseSamples) {
+                        System.out.printf("[Worker %d] Batch %d: forward sample %d/%d%n",
+                                workerId, batchNumber, i + 1, miniBatch.size());
+                    }
+                    double[] probs = model.forward(sample.pixels());
+                    if (verboseSamples) {
+                        System.out.printf("[Worker %d] Batch %d: backward sample %d/%d%n",
+                                workerId, batchNumber, i + 1, miniBatch.size());
+                    }
+                    Gradient grad = model.backward(sample.pixels(), sample.label());
+                    double[] flatGrad = flattenGradient(grad);
+                    if (partial == null) {
+                        partial = new double[flatGrad.length];
+                    }
+                    for (int g = 0; g < flatGrad.length; g++) {
+                        partial[g] += flatGrad[g];
+                    }
+                }
+                return partial;
+            });
+        }
+
+        List<java.util.concurrent.Future<double[]>> futures = batchPool.invokeAll(tasks);
+        double[] total = null;
+        for (java.util.concurrent.Future<double[]> f : futures) {
+            double[] partial = f.get();
+            if (partial == null) continue;
+            if (total == null) {
+                total = new double[partial.length];
+            }
+            for (int g = 0; g < partial.length; g++) {
+                total[g] += partial[g];
+            }
+        }
+
+        if (total == null) {
+            total = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
+                    + MLPModel.HIDDEN1_DIM
+                    + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+                    + MLPModel.HIDDEN2_DIM
+                    + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+                    + MLPModel.OUTPUT_DIM];
+        }
+        return total;
     }
 
     private static int flatten2D(double[][] src, double[] dst, int idx) {

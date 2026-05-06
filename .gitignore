@@ -18,8 +18,6 @@ Thumbs.db
 
 resources/
 
-gui/
-
 # Java build artifacts
 *.class
 GUI_PROJECT.md
@@ -28,7 +26,7 @@ GUI_PROJECT.md
 *.tmp
 *.swp
 
-results/
+*.bin
 
 PROJECT.md
 

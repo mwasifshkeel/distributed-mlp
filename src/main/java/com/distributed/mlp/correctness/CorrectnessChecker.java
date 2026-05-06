@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;   // new import
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -17,23 +17,24 @@ import com.distributed.mlp.model.MathUtils;
 import com.distributed.mlp.protocol.WeightSerializer;
 
 /**
- * Verifies deterministic correctness by comparing sequential and single-worker
- * distributed-equivalent predictions/loss on the same subset and seed.
+ * Verifies deterministic correctness by comparing sequential-equivalent training
+ * with a single-worker distributed run on the same inputs and seed.
  * <p>
  * After the check, the trained model (from the sequential evaluation) is saved
  * to {@code results/correctness_model.bin}.
  */
 public final class CorrectnessChecker {
-    private static final int SUBSET_SIZE = 1_000;
-    private static final int EPOCHS = 3;
+    private static final int MINI_BATCH_SIZE = 32;
+    private static final int DEFAULT_STEPS = 8;
     private static final long SEED = 42L;
 
-    private static final double LOSS_TOLERANCE = 1e-4;
+    private static final double LEARNING_RATE = 1e-3;
+    private static final double LOSS_TOLERANCE = 1e-9;
+    private static final double WEIGHT_TOLERANCE = 1e-9;
 
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 1;
-    private static final int DEFAULT_STEPS = 16;
-    private static final Duration SMOKE_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration SMOKE_TIMEOUT = Duration.ofSeconds(90);
 
     private static final Path MODEL_PATH = Path.of("results", "correctness_model.bin");
 
@@ -55,35 +56,45 @@ public final class CorrectnessChecker {
     }
 
     public static boolean run() throws Exception {
-        List<Sample> subset = loadSubset(SUBSET_SIZE);
+        int steps = DEFAULT_STEPS;
+        int sampleCount = steps * MINI_BATCH_SIZE;
+        List<Sample> subset = loadSubset(sampleCount);
         System.out.printf("[CorrectnessChecker] Using %d samples for validation.%n", subset.size());
 
-        // Run sequential evaluation (this also builds the final trained model)
-        EvalResult sequential = evaluateSequential(subset, EPOCHS, SEED);
-        EvalResult distributedEq = evaluateDistributedEquivalent(subset, EPOCHS, SEED);
+        EvalResult sequential = trainSequential(subset, steps);
+        DistributedResult distributed = runDistributedAndLoadModel(subset, steps, SEED);
 
-        int diffCount = countPredictionDiffs(sequential.predictions(), distributedEq.predictions());
-        double lossDelta = Math.abs(sequential.finalLoss() - distributedEq.finalLoss());
+        if (!distributed.ok()) {
+            saveModel(sequential.model());
+            return false;
+        }
+
+        EvalResult distributedEval = distributed.eval();
+
+        int diffCount = countPredictionDiffs(sequential.predictions(), distributedEval.predictions());
+        double lossDelta = Math.abs(sequential.finalLoss() - distributedEval.finalLoss());
         boolean lossOk = lossDelta <= LOSS_TOLERANCE;
 
-        boolean distributedSmokeOk = runDistributedSmoke(SEED);
+        double maxWeightDelta = maxAbsDiff(
+            flattenModelWeights(sequential.model()),
+            flattenModelWeights(distributedEval.model()));
+        boolean weightsOk = maxWeightDelta <= WEIGHT_TOLERANCE;
 
         System.out.printf(
-                Locale.ROOT,
-                "[CorrectnessChecker] subset=%d epochs=%d seed=%d pred_diffs=%d loss_seq=%.6f loss_dist=%.6f loss_delta=%.6f tol=%.6f smoke=%s%n",
-                subset.size(),
-                EPOCHS,
-                SEED,
-                diffCount,
-                sequential.finalLoss(),
-                distributedEq.finalLoss(),
-                lossDelta,
-                LOSS_TOLERANCE,
-                distributedSmokeOk ? "ok" : "failed");
+            Locale.ROOT,
+            "[CorrectnessChecker] steps=%d seed=%d pred_diffs=%d loss_seq=%.9f loss_dist=%.9f loss_delta=%.9f tol=%.9f max_weight_delta=%.9f weight_tol=%.9f%n",
+            steps,
+            SEED,
+            diffCount,
+            sequential.finalLoss(),
+            distributedEval.finalLoss(),
+            lossDelta,
+            LOSS_TOLERANCE,
+            maxWeightDelta,
+            WEIGHT_TOLERANCE);
 
-        // Save the trained model from the sequential evaluation
         saveModel(sequential.model());
-        return diffCount == 0 && lossOk && distributedSmokeOk;
+        return diffCount == 0 && lossOk && weightsOk;
     }
 
     private static List<Sample> loadSubset(int subsetSize) throws IOException {
@@ -99,45 +110,84 @@ public final class CorrectnessChecker {
         return new ArrayList<>(all.subList(0, end));
     }
 
-    // ------------------ internal evaluations ------------------
+    // ------------------ sequential-equivalent training ------------------
 
-    private static EvalResult evaluateSequential(List<Sample> samples, int epochs, long seed) {
-        return evaluateDeterministic(samples, epochs, seed);
-    }
-
-    private static EvalResult evaluateDistributedEquivalent(List<Sample> samples, int epochs, long seed) {
-        return evaluateDeterministic(samples, epochs, seed);
-    }
-
-    private static EvalResult evaluateDeterministic(List<Sample> samples, int epochs, long seed) {
+    private static EvalResult trainSequential(List<Sample> samples, int steps) {
         MLPModel model = new MLPModel();
-        model.initXavier(seed);
+        double[] zeros = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
+            + MLPModel.HIDDEN1_DIM
+            + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+            + MLPModel.HIDDEN2_DIM
+            + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+            + MLPModel.OUTPUT_DIM];
+        model.loadWeights(zeros);
 
-        List<Integer> finalPredictions = new ArrayList<>(samples.size());
-        double finalLoss = Double.NaN;
-
-        for (int epoch = 1; epoch <= epochs; epoch++) {
-            finalPredictions.clear();
-            double totalLoss = 0.0;
-
-            for (Sample sample : samples) {
-                double[] probs = model.forward(sample.pixels());
-                totalLoss += MathUtils.crossEntropyLoss(probs, sample.label());
-                finalPredictions.add(argmax(probs));
-
-                model.backward(sample.pixels(), sample.label());
-            }
-
-            finalLoss = totalLoss / samples.size();
-            System.out.printf(
-                    Locale.ROOT,
-                    "[CorrectnessChecker] eval epoch=%d avg_loss=%.6f%n",
-                    epoch,
-                    finalLoss);
+        int maxBatches = samples.size() / MINI_BATCH_SIZE;
+        int effectiveSteps = Math.min(steps, maxBatches);
+        if (effectiveSteps < steps) {
+            System.out.printf("[CorrectnessChecker] Reducing steps from %d to %d (insufficient samples).%n",
+                    steps, effectiveSteps);
         }
 
-        // Return the trained model along with predictions and loss
+        for (int step = 0; step < effectiveSteps; step++) {
+            int start = step * MINI_BATCH_SIZE;
+            int end = start + MINI_BATCH_SIZE;
+            List<Sample> miniBatch = samples.subList(start, end);
+
+            double[] batchGrad = computeBatchGradient(model, miniBatch);
+            double scale = 1.0 / miniBatch.size();
+            for (int i = 0; i < batchGrad.length; i++) {
+                batchGrad[i] *= scale;
+            }
+            applyGradient(model, batchGrad, LEARNING_RATE);
+        }
+
+        return evaluateModel(model, samples);
+    }
+
+    private static EvalResult evaluateModel(MLPModel model, List<Sample> samples) {
+        List<Integer> finalPredictions = new ArrayList<>(samples.size());
+        double totalLoss = 0.0;
+
+        for (Sample sample : samples) {
+            double[] probs = model.forward(sample.pixels());
+            totalLoss += MathUtils.crossEntropyLoss(probs, sample.label());
+            finalPredictions.add(argmax(probs));
+        }
+
+        double finalLoss = totalLoss / samples.size();
         return new EvalResult(new ArrayList<>(finalPredictions), finalLoss, model);
+    }
+
+    private static void applyGradient(MLPModel model, double[] gradient, double lr) {
+        double[] flat = flattenModelWeights(model);
+        for (int i = 0; i < flat.length; i++) {
+            flat[i] -= lr * gradient[i];
+        }
+        model.loadWeights(flat);
+    }
+
+    private static double[] computeBatchGradient(MLPModel model, List<Sample> miniBatch) {
+        double[] total = null;
+        for (Sample sample : miniBatch) {
+            MLPModel.Gradient grad = model.backward(sample.pixels(), sample.label());
+            double[] flat = flattenGradient(grad);
+            if (total == null) {
+                total = new double[flat.length];
+            }
+            for (int i = 0; i < flat.length; i++) {
+                total[i] += flat[i];
+            }
+        }
+        if (total == null) {
+            total = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
+                    + MLPModel.HIDDEN1_DIM
+                    + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+                    + MLPModel.HIDDEN2_DIM
+                    + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+                    + MLPModel.OUTPUT_DIM];
+        }
+        return total;
     }
 
     private static int countPredictionDiffs(List<Integer> a, List<Integer> b) {
@@ -162,6 +212,16 @@ public final class CorrectnessChecker {
             }
         }
         return bestIdx;
+    }
+
+    private static double maxAbsDiff(double[] a, double[] b) {
+        int size = Math.min(a.length, b.length);
+        double max = 0.0;
+        for (int i = 0; i < size; i++) {
+            double diff = Math.abs(a[i] - b[i]);
+            if (diff > max) max = diff;
+        }
+        return max;
     }
 
     // ------------------ model saving (reflection) ------------------
@@ -229,34 +289,36 @@ public final class CorrectnessChecker {
 
     // ------------------ distributed smoke test ------------------
 
-    private static boolean runDistributedSmoke(long seed) {
+    private static DistributedResult runDistributedAndLoadModel(List<Sample> subset, int steps, long seed) {
         Path classes = Path.of("target", "classes");
         if (!Files.exists(classes)) {
             System.err.println("[CorrectnessChecker] smoke skipped: target/classes missing");
-            return true;
+            return new DistributedResult(false, null, null);
         }
+
+        deleteExistingModelWeights();
 
         Process master = null;
         Process worker = null;
         try {
             master = startJavaProcess(List.of(
-                    "com.distributed.mlp.Master",
-                    String.valueOf(DEFAULT_PORT),
-                    String.valueOf(DEFAULT_WORKERS),
-                    String.valueOf(DEFAULT_STEPS),
-                    String.valueOf(seed),
-                    "false"));
+                "com.distributed.mlp.Master",
+                String.valueOf(DEFAULT_PORT),
+                String.valueOf(DEFAULT_WORKERS),
+                String.valueOf(steps),
+                String.valueOf(seed),
+                "false"));
 
             Thread.sleep(1200L);
 
             worker = startJavaProcess(List.of(
-                    "com.distributed.mlp.Worker",
-                    "127.0.0.1",
-                    String.valueOf(DEFAULT_PORT),
-                    "0",
-                    "1",
-                    String.valueOf(DEFAULT_STEPS),
-                    String.valueOf(seed)));
+                "com.distributed.mlp.Worker",
+                "127.0.0.1",
+                String.valueOf(DEFAULT_PORT),
+                "0",
+                "1",
+                String.valueOf(steps),
+                String.valueOf(seed)));
 
             Instant t0 = Instant.now();
             boolean masterDone = master.waitFor(SMOKE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
@@ -280,10 +342,31 @@ public final class CorrectnessChecker {
                     masterCode,
                     workerCode,
                     wallSec);
-            return masterCode == 0 && workerCode == 0;
-        } catch (Exception e) {
+            boolean ok = masterCode == 0 && workerCode == 0;
+            if (!ok) {
+                return new DistributedResult(false, null, null);
+            }
+
+            Path weightsPath = findLatestModelWeights();
+            if (weightsPath == null) {
+                System.err.println("[CorrectnessChecker] No model_weights_*.bin found after run.");
+                return new DistributedResult(false, null, null);
+            }
+
+            double[] weights = WeightSerializer.fromBytesDouble(Files.readAllBytes(weightsPath));
+            MLPModel model = new MLPModel();
+            model.initXavier(seed);
+            model.loadWeights(weights);
+
+            EvalResult eval = evaluateModel(model, subset);
+            return new DistributedResult(true, eval, weightsPath);
+        } catch (IOException | RuntimeException e) {
             System.err.println("[CorrectnessChecker] distributed smoke failed: " + e.getMessage());
-            return false;
+            return new DistributedResult(false, null, null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("[CorrectnessChecker] distributed smoke interrupted: " + e.getMessage());
+            return new DistributedResult(false, null, null);
         } finally {
             if (worker != null && worker.isAlive()) {
                 worker.destroyForcibly();
@@ -297,6 +380,9 @@ public final class CorrectnessChecker {
     private static Process startJavaProcess(List<String> classAndArgs) throws IOException {
         List<String> cmd = new ArrayList<>();
         cmd.add(getJavaExecutable());
+        cmd.add("-Dmlp.computeThreads=1");
+        cmd.add("-Dmlp.pullEvery=1");
+        cmd.add("-Dmlp.compressGradients=false");
         cmd.add("-cp");
         cmd.add(resolveRuntimeClasspath());
         cmd.addAll(classAndArgs);
@@ -327,5 +413,74 @@ public final class CorrectnessChecker {
     // ------------------ result record ------------------
 
     private record EvalResult(List<Integer> predictions, double finalLoss, MLPModel model) {
+    }
+
+    private record DistributedResult(boolean ok, EvalResult eval, Path weightsPath) {
+    }
+
+    private static void deleteExistingModelWeights() {
+        try {
+            Path dir = Path.of("results");
+            if (!Files.isDirectory(dir)) return;
+            try (var stream = Files.newDirectoryStream(dir, "model_weights_*.bin")) {
+                for (Path p : stream) {
+                    Files.deleteIfExists(p);
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("[CorrectnessChecker] Could not clear model weights: " + e.getMessage());
+        }
+    }
+
+    private static Path findLatestModelWeights() throws IOException {
+        Path dir = Path.of("results");
+        if (!Files.isDirectory(dir)) return null;
+        Path latest = null;
+        long latestTs = -1L;
+        try (var stream = Files.newDirectoryStream(dir, "model_weights_*.bin")) {
+            for (Path p : stream) {
+                long ts = Files.getLastModifiedTime(p).toMillis();
+                if (ts > latestTs) {
+                    latestTs = ts;
+                    latest = p;
+                }
+            }
+        }
+        return latest;
+    }
+
+    private static double[] flattenGradient(MLPModel.Gradient gradient) {
+        int size = MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
+                + MLPModel.HIDDEN1_DIM
+                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
+                + MLPModel.HIDDEN2_DIM
+                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
+                + MLPModel.OUTPUT_DIM;
+
+        double[] flat = new double[size];
+        int idx = 0;
+        idx = flatten2D(gradient.getDW1(), flat, idx);
+        idx = flatten1D(gradient.getDb1(), flat, idx);
+        idx = flatten2D(gradient.getDW2(), flat, idx);
+        idx = flatten1D(gradient.getDb2(), flat, idx);
+        idx = flatten2D(gradient.getDW3(), flat, idx);
+        flatten1D(gradient.getDb3(), flat, idx);
+        return flat;
+    }
+
+    private static int flatten2D(double[][] src, double[] dst, int idx) {
+        for (double[] row : src) {
+            for (double value : row) {
+                dst[idx++] = value;
+            }
+        }
+        return idx;
+    }
+
+    private static int flatten1D(double[] src, double[] dst, int idx) {
+        for (double value : src) {
+            dst[idx++] = value;
+        }
+        return idx;
     }
 }

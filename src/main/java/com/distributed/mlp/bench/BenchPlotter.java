@@ -31,6 +31,7 @@ public final class BenchPlotter {
     private static final Path AMDAHL_CSV = RESULTS_DIR.resolve("amdahl_comparison.csv");
     private static final Path SERIAL_CSV = RESULTS_DIR.resolve("serial_bench.csv");
     private static final Path OPT_CSV = RESULTS_DIR.resolve("optimisation_runs.csv");
+    private static final Path THREAD_CSV = RESULTS_DIR.resolve("thread_scaling.csv");
 
     private static final int WIDTH = 1200;
     private static final int HEIGHT = 700;
@@ -46,6 +47,7 @@ public final class BenchPlotter {
             plotAmdahl();
             plotSerialBench();
             plotOptimization();
+            plotThreadScaling();
             System.out.println("Plots saved under: " + PLOTS_DIR.toAbsolutePath());
         } catch (Exception e) {
             System.err.println("BenchPlotter failed: " + e.getMessage());
@@ -112,6 +114,7 @@ public final class BenchPlotter {
     private static void plotScalingSeries(List<ScalingRow> rows, String label,
                                           String speedupOut, String effOut) throws IOException {
         Map<Integer, List<ScalingRow>> byWorkers = rows.stream()
+            .filter(row -> row.workers() > 0 && row.workers() <= 8)
                 .collect(Collectors.groupingBy(ScalingRow::workers));
 
         List<Double> workers = byWorkers.keySet().stream()
@@ -153,12 +156,32 @@ public final class BenchPlotter {
             return;
         }
         List<String[]> rows = readCsv(AMDAHL_CSV);
-        List<Double> workers = columnAsDouble(rows, 0);
-        List<Double> measured = columnAsDouble(rows, 1);
-        List<Double> amdahl = columnAsDouble(rows, 2);
-        List<Double> f05 = columnAsDouble(rows, 3);
-        List<Double> f09 = columnAsDouble(rows, 4);
-        List<Double> f099 = columnAsDouble(rows, 5);
+        List<Double> workersRaw = columnAsDouble(rows, 0);
+        List<Double> measuredRaw = columnAsDouble(rows, 1);
+        List<Double> amdahlRaw = columnAsDouble(rows, 2);
+        List<Double> f05Raw = columnAsDouble(rows, 3);
+        List<Double> f09Raw = columnAsDouble(rows, 4);
+        List<Double> f099Raw = columnAsDouble(rows, 5);
+
+        List<Double> workers = new ArrayList<>();
+        List<Double> measured = new ArrayList<>();
+        List<Double> amdahl = new ArrayList<>();
+        List<Double> f05 = new ArrayList<>();
+        List<Double> f09 = new ArrayList<>();
+        List<Double> f099 = new ArrayList<>();
+
+        for (int i = 0; i < workersRaw.size(); i++) {
+            double w = workersRaw.get(i);
+            if (w <= 0 || w > 8) {
+                continue;
+            }
+            workers.add(w);
+            measured.add(getOrNaN(measuredRaw, i));
+            amdahl.add(getOrNaN(amdahlRaw, i));
+            f05.add(getOrNaN(f05Raw, i));
+            f09.add(getOrNaN(f09Raw, i));
+            f099.add(getOrNaN(f099Raw, i));
+        }
 
         lineChart(
                 "Amdahl Speedup Comparison",
@@ -167,7 +190,8 @@ public final class BenchPlotter {
                 workers,
                 List.of(measured, amdahl, f05, f09, f099),
                 List.of("measured", "estimated", "f=0.5", "f=0.9", "f=0.99"),
-                PLOTS_DIR.resolve("amdahl_speedup.png"));
+            PLOTS_DIR.resolve("amdahl_speedup.png"),
+            true);
     }
 
     private static void plotSerialBench() throws IOException {
@@ -205,6 +229,46 @@ public final class BenchPlotter {
                 values,
                 PLOTS_DIR.resolve("optimisation_wall_sec.png"));
     }
+
+        private static void plotThreadScaling() throws IOException {
+        if (!Files.exists(THREAD_CSV)) {
+            System.err.println("[BenchPlotter] Missing thread_scaling.csv, skipping.");
+            return;
+        }
+
+        List<String[]> rows = readCsv(THREAD_CSV);
+        List<Double> threads = columnAsDouble(rows, 1);
+        List<Double> wall = columnAsDouble(rows, 3);
+        List<Double> speedup = columnAsDouble(rows, 4);
+        List<Double> efficiency = columnAsDouble(rows, 5);
+
+        lineChart(
+            "Thread Scaling Wall Time",
+            "compute_threads",
+            "wall_sec",
+            threads,
+            List.of(wall),
+            List.of("wall_sec"),
+            PLOTS_DIR.resolve("thread_scaling_wall_sec.png"));
+
+        lineChart(
+            "Thread Scaling Speedup",
+            "compute_threads",
+            "speedup",
+            threads,
+            List.of(speedup),
+            List.of("speedup"),
+            PLOTS_DIR.resolve("thread_scaling_speedup.png"));
+
+        lineChart(
+            "Thread Scaling Efficiency",
+            "compute_threads",
+            "efficiency",
+            threads,
+            List.of(efficiency),
+            List.of("efficiency"),
+            PLOTS_DIR.resolve("thread_scaling_efficiency.png"));
+        }
 
     private static List<String[]> readCsv(Path csv) throws IOException {
         List<String> lines = Files.readAllLines(csv, StandardCharsets.UTF_8);
@@ -251,6 +315,15 @@ public final class BenchPlotter {
                                   List<List<Double>> series,
                                   List<String> labels,
                                   Path outFile) throws IOException {
+        lineChart(title, xLabel, yLabel, x, series, labels, outFile, false);
+    }
+
+    private static void lineChart(String title, String xLabel, String yLabel,
+                                  List<Double> x,
+                                  List<List<Double>> series,
+                                  List<String> labels,
+                                  Path outFile,
+                                  boolean highlightFirst) throws IOException {
         BufferedImage img = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();
         setupGraphics(g);
@@ -277,8 +350,9 @@ public final class BenchPlotter {
         double yMax = series.stream().flatMap(List::stream).max(Double::compare).orElse(1.0);
         if (yMax == yMin) yMax = yMin + 1.0;
 
-        g.setColor(Color.DARK_GRAY);
-        g.drawRect(left, top, w, h);
+        boolean integerX = x.stream().allMatch(v -> Math.abs(v - Math.rint(v)) < 1e-6);
+        List<Double> xTicks = buildXTicks(xMin, xMax, integerX);
+        drawLineGrid(g, left, top, w, h, xMin, xMax, yMin, yMax, xTicks);
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 14));
         g.drawString(xLabel, left + w / 2 - 20, HEIGHT - 30);
@@ -295,13 +369,22 @@ public final class BenchPlotter {
         for (int s = 0; s < series.size(); s++) {
             List<Double> ys = series.get(s);
             g.setColor(palette[s % palette.length]);
-            g.setStroke(new BasicStroke(2.5f));
+            g.setStroke(new BasicStroke(highlightFirst && s == 0 ? 4.0f : 2.5f));
             for (int i = 0; i < x.size() - 1 && i < ys.size() - 1; i++) {
                 int x1 = left + (int) ((x.get(i) - xMin) / (xMax - xMin) * w);
                 int y1 = top + h - (int) ((ys.get(i) - yMin) / (yMax - yMin) * h);
                 int x2 = left + (int) ((x.get(i + 1) - xMin) / (xMax - xMin) * w);
                 int y2 = top + h - (int) ((ys.get(i + 1) - yMin) / (yMax - yMin) * h);
                 g.drawLine(x1, y1, x2, y2);
+            }
+
+            if (highlightFirst && s == 0) {
+                int r = 4;
+                for (int i = 0; i < x.size() && i < ys.size(); i++) {
+                    int cx = left + (int) ((x.get(i) - xMin) / (xMax - xMin) * w);
+                    int cy = top + h - (int) ((ys.get(i) - yMin) / (yMax - yMin) * h);
+                    g.fillOval(cx - r, cy - r, r * 2, r * 2);
+                }
             }
         }
 
@@ -337,8 +420,7 @@ public final class BenchPlotter {
         double max = values.stream().max(Double::compare).orElse(1.0);
         if (max == 0.0) max = 1.0;
 
-        g.setColor(Color.DARK_GRAY);
-        g.drawRect(left, top, w, h);
+        drawBarGrid(g, left, top, w, h, max);
 
         int barCount = Math.max(1, values.size());
         int barWidth = w / barCount - 10;
@@ -385,6 +467,84 @@ public final class BenchPlotter {
         }
     }
 
+    private static void drawLineGrid(Graphics2D g, int left, int top, int w, int h,
+                                     double xMin, double xMax, double yMin, double yMax,
+                                     List<Double> xTicks) {
+        int yTicks = 6;
+
+        g.setColor(new Color(230, 230, 230));
+        for (double v : xTicks) {
+            int x = left + (int) ((v - xMin) / (xMax - xMin) * w);
+            g.drawLine(x, top, x, top + h);
+        }
+        for (int i = 0; i <= yTicks; i++) {
+            double v = yMin + (yMax - yMin) * i / yTicks;
+            int y = top + h - (int) ((v - yMin) / (yMax - yMin) * h);
+            g.drawLine(left, y, left + w, y);
+        }
+
+        g.setColor(Color.DARK_GRAY);
+        g.drawRect(left, top, w, h);
+
+        g.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        double xSpan = xMax - xMin;
+        double ySpan = yMax - yMin;
+        for (double v : xTicks) {
+            int x = left + (int) ((v - xMin) / xSpan * w);
+            String label = formatTick(v, xSpan);
+            g.drawString(label, x - 10, top + h + 20);
+        }
+        for (int i = 0; i <= yTicks; i++) {
+            double v = yMin + ySpan * i / yTicks;
+            int y = top + h - (int) ((v - yMin) / ySpan * h);
+            String label = formatTick(v, ySpan);
+            g.drawString(label, 15, y + 4);
+        }
+    }
+
+    private static void drawBarGrid(Graphics2D g, int left, int top, int w, int h, double max) {
+        int yTicks = 6;
+        g.setColor(new Color(230, 230, 230));
+        for (int i = 0; i <= yTicks; i++) {
+            double v = max * i / yTicks;
+            int y = top + h - (int) ((v / max) * h);
+            g.drawLine(left, y, left + w, y);
+        }
+
+        g.setColor(Color.DARK_GRAY);
+        g.drawRect(left, top, w, h);
+
+        g.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        for (int i = 0; i <= yTicks; i++) {
+            double v = max * i / yTicks;
+            int y = top + h - (int) ((v / max) * h);
+            g.drawString(formatTick(v, max), 15, y + 4);
+        }
+    }
+
+    private static List<Double> buildXTicks(double xMin, double xMax, boolean integerX) {
+        List<Double> ticks = new ArrayList<>();
+        if (integerX) {
+            int start = (int) Math.ceil(xMin);
+            int end = (int) Math.floor(xMax);
+            for (int v = start; v <= end; v++) {
+                ticks.add((double) v);
+            }
+            if (ticks.isEmpty()) {
+                ticks.add(xMin);
+                if (xMax != xMin) {
+                    ticks.add(xMax);
+                }
+            }
+            return ticks;
+        }
+        int count = 6;
+        for (int i = 0; i <= count; i++) {
+            ticks.add(xMin + (xMax - xMin) * i / count);
+        }
+        return ticks;
+    }
+
     private static int parseInt(String value) {
         try {
             return Integer.parseInt(value.trim());
@@ -399,6 +559,29 @@ public final class BenchPlotter {
         } catch (NumberFormatException e) {
             return Double.NaN;
         }
+    }
+
+    private static double getOrNaN(List<Double> values, int idx) {
+        if (idx < 0 || idx >= values.size()) {
+            return Double.NaN;
+        }
+        return values.get(idx);
+    }
+
+    private static String formatTick(double value, double span) {
+        if (Math.abs(value - Math.rint(value)) < 1e-6) {
+            return String.format(Locale.ROOT, "%.0f", value);
+        }
+        if (span < 1.0) {
+            return String.format(Locale.ROOT, "%.3f", value);
+        }
+        if (span < 10.0) {
+            return String.format(Locale.ROOT, "%.2f", value);
+        }
+        if (span < 100.0) {
+            return String.format(Locale.ROOT, "%.1f", value);
+        }
+        return String.format(Locale.ROOT, "%.0f", value);
     }
 
     private record ScalingRow(
