@@ -21,8 +21,12 @@ import com.distributed.mlp.baseline.SequentialBaseline;
 public final class ScalingExperiment {
     private static final int[] WORKER_CONFIGS = {1, 2, 3, 4, 8};
     private static final int EPOCHS = 5;
-    private static final int STRONG_INPUT_SIZE = 75_750;
-    private static final int WEAK_WORK_PER_WORKER = 25_250;
+    private static final int STRONG_INPUT_SIZE = 12_000;
+    private static final int WEAK_WORK_PER_WORKER = 3_000;
+    private static final int BENCH_COMPUTE_THREADS = 2;
+    private static final int STARTUP_GRACE_MS = 2_000;
+    private static final int DEFAULT_PULL_EVERY = 10;
+    private static final boolean BENCH_COMPRESS = true;
 
     private static final int MASTER_PORT = 9000;
     private static final int MASTER_TARGET_UPDATES_FALLBACK = 100;
@@ -33,6 +37,7 @@ public final class ScalingExperiment {
     private static final Path STRONG_CSV = RESULTS_DIR.resolve("strong_scaling.csv");
     private static final Path WEAK_CSV = RESULTS_DIR.resolve("weak_scaling.csv");
     private static final Path SEQ_CSV = RESULTS_DIR.resolve("sequential_results.csv");
+    private static final String MAX_SAMPLES_PROP = "mlp.maxSamples";
 
     private ScalingExperiment() {
     }
@@ -40,6 +45,11 @@ public final class ScalingExperiment {
 
     public static void main(String[] args) {
         try {
+            configureMaxSamples(args);
+            int limit = resolveMaxSamples();
+            if (limit > 0) {
+                System.out.printf("[ScalingExperiment] Sample cap enabled: %,d images%n", limit);
+            }
             System.out.println("[ScalingExperiment] Starting strong & weak scaling...");
             run();
             System.out.println("Scaling experiments complete.");
@@ -65,7 +75,7 @@ public final class ScalingExperiment {
     private static List<ScalingRow> runStrongScaling() throws Exception {
         List<RawEpoch> raw = new ArrayList<>();
         for (int workers : WORKER_CONFIGS) {
-            raw.addAll(runConfig("strong", workers, STRONG_INPUT_SIZE));
+            raw.addAll(runConfig("strong", workers, effectiveSampleCount(STRONG_INPUT_SIZE)));
         }
 
         double tSeq = meanWall(raw, "strong", 1);
@@ -79,7 +89,7 @@ public final class ScalingExperiment {
     private static List<ScalingRow> runWeakScaling() throws Exception {
         List<RawEpoch> raw = new ArrayList<>();
         for (int workers : WORKER_CONFIGS) {
-            int inputSize = workers * WEAK_WORK_PER_WORKER;
+            int inputSize = effectiveSampleCount(workers * WEAK_WORK_PER_WORKER);
             raw.addAll(runConfig("weak", workers, inputSize));
         }
 
@@ -141,10 +151,11 @@ public final class ScalingExperiment {
                     String.valueOf(MASTER_PORT),
                     String.valueOf(workers),
                     String.valueOf(steps),
-                    String.valueOf(BASE_SEED + inputSize + epoch),
-                    "false"));
+                String.valueOf(BASE_SEED + inputSize + epoch),
+                "false"),
+                javaProps());
 
-            Thread.sleep(1500L);
+            pause(1500L);
 
             List<Process> workerProcesses = new ArrayList<>();
             for (int workerId = 0; workerId < workers; workerId++) {
@@ -155,10 +166,12 @@ public final class ScalingExperiment {
                         String.valueOf(workerId),
                         String.valueOf(workers),
                         String.valueOf(steps),
-                        String.valueOf(BASE_SEED + inputSize + epoch + workerId)));
+                        String.valueOf(BASE_SEED + inputSize + epoch + workerId)),
+                        javaProps());
                 workerProcesses.add(worker);
             }
 
+            pause(STARTUP_GRACE_MS);
             Instant t0 = Instant.now();
             int masterExit = master.waitFor();
             double wallSec = Duration.between(t0, Instant.now()).toMillis() / 1000.0;
@@ -186,9 +199,10 @@ public final class ScalingExperiment {
         return rows;
     }
 
-    private static Process startJavaProcess(List<String> classAndArgs) throws IOException {
+    private static Process startJavaProcess(List<String> classAndArgs, List<String> jvmArgs) throws IOException {
         List<String> cmd = new ArrayList<>();
         cmd.add(getJavaExecutable());
+        cmd.addAll(jvmArgs);
         cmd.add("-cp");
         cmd.add(resolveRuntimeClasspath());
         cmd.addAll(classAndArgs);
@@ -197,6 +211,25 @@ public final class ScalingExperiment {
         pb.redirectErrorStream(true);
         pb.inheritIO();
         return pb.start();
+    }
+
+    private static List<String> javaProps() {
+        List<String> props = new ArrayList<>();
+        if (BENCH_COMPRESS) {
+            props.add("-Dmlp.compressGradients=true");
+        }
+        props.add("-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY);
+        props.add("-Dmlp.computeThreads=" + BENCH_COMPUTE_THREADS);
+        props.add("-Dmlp.ioThreads=1");
+        int maxSamples = resolveMaxSamples();
+        if (maxSamples > 0) {
+            props.add("-D" + MAX_SAMPLES_PROP + "=" + maxSamples);
+        }
+        return props;
+    }
+
+    private static void pause(long millis) throws InterruptedException {
+        Thread.sleep(millis);
     }
 
     private static String getJavaExecutable() {
@@ -224,6 +257,40 @@ public final class ScalingExperiment {
         }
     }
 
+    private static void configureMaxSamples(String[] args) {
+        if (args.length == 0 || args[0] == null || args[0].isBlank()) {
+            return;
+        }
+        int maxSamples = Integer.parseInt(args[0].trim());
+        if (maxSamples <= 0) {
+            throw new IllegalArgumentException("max samples must be > 0");
+        }
+        System.setProperty(MAX_SAMPLES_PROP, String.valueOf(maxSamples));
+    }
+
+    private static int resolveMaxSamples() {
+        String value = System.getProperty(MAX_SAMPLES_PROP);
+        if (value == null || value.isBlank()) {
+            value = System.getenv("MLP_MAX_SAMPLES");
+        }
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static int effectiveSampleCount(int requested) {
+        int maxSamples = resolveMaxSamples();
+        if (maxSamples <= 0) {
+            return requested;
+        }
+        return Math.min(requested, maxSamples);
+    }
+
     private static double meanWall(List<RawEpoch> rows, String experiment, int workers) {
         return rows.stream()
                 .filter(r -> experiment.equals(r.experiment()))
@@ -242,6 +309,12 @@ public final class ScalingExperiment {
             double parallelFraction = p == 1
                     ? Double.NaN
                     : ((1.0 / speedup) - 1.0) / ((1.0 / p) - 1.0);
+            double serialFraction = p == 1
+                ? Double.NaN
+                : ((1.0 / speedup) - (1.0 / p)) / (1.0 - (1.0 / p));
+            double gustafsonSpeedup = p == 1
+                ? 1.0
+                : p - serialFraction * (p - 1.0);
 
             out.add(new ScalingRow(
                     row.experiment(),
@@ -251,7 +324,9 @@ public final class ScalingExperiment {
                     row.wallSec(),
                     speedup,
                     efficiency,
-                    parallelFraction));
+                parallelFraction,
+                serialFraction,
+                gustafsonSpeedup));
         }
 
         return out.stream()
@@ -264,13 +339,13 @@ public final class ScalingExperiment {
 
     private static void writeCsv(Path path, List<ScalingRow> rows) throws IOException {
         StringBuilder sb = new StringBuilder();
-        sb.append("experiment,workers,input_size,epoch,wall_sec,speedup,efficiency,parallel_fraction")
+        sb.append("experiment,workers,input_size,epoch,wall_sec,speedup,efficiency,amdahl_parallel_fraction,karp_flatt_serial_fraction,gustafson_speedup")
                 .append(System.lineSeparator());
 
         for (ScalingRow row : rows) {
             sb.append(String.format(
                     Locale.ROOT,
-                    "%s,%d,%d,%d,%.6f,%.6f,%.6f,%s%n",
+                "%s,%d,%d,%d,%.6f,%.6f,%.6f,%s,%s,%.6f%n",
                     row.experiment(),
                     row.workers(),
                     row.inputSize(),
@@ -278,9 +353,9 @@ public final class ScalingExperiment {
                     row.wallSec(),
                     row.speedup(),
                     row.efficiency(),
-                    Double.isNaN(row.parallelFraction())
-                            ? "NaN"
-                            : String.format(Locale.ROOT, "%.6f", row.parallelFraction())));
+                formatMaybeNa(row.parallelFraction()),
+                formatMaybeNa(row.serialFraction()),
+                row.gustafsonSpeedup()));
         }
 
         Files.writeString(
@@ -303,6 +378,12 @@ public final class ScalingExperiment {
             double wallSec,
             double speedup,
             double efficiency,
-            double parallelFraction) {
+            double parallelFraction,
+            double serialFraction,
+            double gustafsonSpeedup) {
+    }
+
+    private static String formatMaybeNa(double value) {
+        return Double.isNaN(value) ? "NaN" : String.format(Locale.ROOT, "%.6f", value);
     }
 }

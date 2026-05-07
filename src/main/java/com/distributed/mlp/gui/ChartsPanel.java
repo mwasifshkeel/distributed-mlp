@@ -83,7 +83,7 @@ public class ChartsPanel {
 
     // ── Chart builders ───────────────────────────────────────────────────────
 
-    /** results/strong_scaling.csv: workers,epoch,wall_sec,speedup,efficiency,parallel_fraction */
+    /** results/strong_scaling.csv: experiment,workers,input_size,epoch,wall_sec,speedup,efficiency,parallel_fraction */
     private Node buildStrongScalingChart() {
         List<String[]> rows = loadCsv("strong_scaling.csv");
         if (rows.isEmpty()) return placeholder("Run ScalingExperiment first to generate strong_scaling.csv");
@@ -92,13 +92,17 @@ public class ChartsPanel {
         Map<Integer, List<Double>> speedupByWorkers = new LinkedHashMap<>();
         for (String[] r : rows) {
             try {
-                int w = Integer.parseInt(r[0]);
-                double sp = Double.parseDouble(r[3]);
+                int w = Integer.parseInt(r[1]);
+                if (w <= 0 || w > 8) {
+                    continue;
+                }
+                double sp = Double.parseDouble(r[5]);
                 speedupByWorkers.computeIfAbsent(w, k -> new ArrayList<>()).add(sp);
             } catch (Exception ignored) {}
         }
 
-        NumberAxis xAxis = new NumberAxis();
+        NumberAxis xAxis = new NumberAxis(1, 8, 1);
+        xAxis.setAutoRanging(false);
         xAxis.setLabel("Workers");
         NumberAxis yAxis = new NumberAxis();
         yAxis.setLabel("Speedup");
@@ -126,7 +130,7 @@ public class ChartsPanel {
         return chart;
     }
 
-    /** results/weak_scaling.csv: workers,epoch,wall_sec,efficiency */
+    /** results/weak_scaling.csv: experiment,workers,input_size,epoch,wall_sec,speedup,efficiency,parallel_fraction */
     private Node buildWeakScalingChart() {
         List<String[]> rows = loadCsv("weak_scaling.csv");
         if (rows.isEmpty()) return placeholder("Run ScalingExperiment first to generate weak_scaling.csv");
@@ -134,14 +138,19 @@ public class ChartsPanel {
         Map<Integer, List<Double>> effByWorkers = new LinkedHashMap<>();
         for (String[] r : rows) {
             try {
-                int w = Integer.parseInt(r[0]);
-                double eff = Double.parseDouble(r[3]);
+                int w = Integer.parseInt(r[1]);
+                if (w <= 0 || w > 8) {
+                    continue;
+                }
+                double eff = Double.parseDouble(r[6]);
                 effByWorkers.computeIfAbsent(w, k -> new ArrayList<>()).add(eff);
             } catch (Exception ignored) {}
         }
 
         CategoryAxis xAxis = new CategoryAxis();
         xAxis.setLabel("Workers");
+        xAxis.setCategories(javafx.collections.FXCollections.observableArrayList(
+            List.of("1", "2", "3", "4", "5", "6", "7", "8")));
         NumberAxis yAxis = new NumberAxis(0, 1.2, 0.1);
         yAxis.setLabel("Efficiency");
 
@@ -202,12 +211,13 @@ public class ChartsPanel {
         return chart;
     }
 
-    /** results/amdahl_comparison.csv: workers,measured_speedup,f0.5,f0.9,f0.99 */
+    /** results/amdahl_comparison.csv: workers,measured_speedup,amdahl_estimated,amdahl_f_0_5,amdahl_f_0_9,amdahl_f_0_99,karp_flatt_serial_fraction,gustafson_speedup */
     private Node buildAmdahlChart() {
         List<String[]> rows = loadCsv("amdahl_comparison.csv");
         if (rows.isEmpty()) return placeholder("Run SpeedupAnalyzer to generate amdahl_comparison.csv");
 
-        NumberAxis xAxis = new NumberAxis();
+        NumberAxis xAxis = new NumberAxis(1, 8, 1);
+        xAxis.setAutoRanging(false);
         xAxis.setLabel("Workers");
         NumberAxis yAxis = new NumberAxis();
         yAxis.setLabel("Speedup");
@@ -216,21 +226,29 @@ public class ChartsPanel {
         chart.setTitle("Amdahl's Law Analysis");
         chart.setPrefHeight(350);
 
-        XYChart.Series<Number, Number> measured = new XYChart.Series<>(); measured.setName("Measured");
-        XYChart.Series<Number, Number> f50       = new XYChart.Series<>(); f50.setName("Amdahl f=0.5");
-        XYChart.Series<Number, Number> f90       = new XYChart.Series<>(); f90.setName("Amdahl f=0.9");
-        XYChart.Series<Number, Number> f99       = new XYChart.Series<>(); f99.setName("Amdahl f=0.99");
+        XYChart.Series<Number, Number> measured = new XYChart.Series<>();
+        measured.setName("Measured Speedup");
+        XYChart.Series<Number, Number> f50 = new XYChart.Series<>();
+        f50.setName("Expected (Amdahl f=0.5)");
+        XYChart.Series<Number, Number> gustafson = new XYChart.Series<>();
+        gustafson.setName("Gustafson");
 
         for (String[] r : rows) {
             try {
                 int w = Integer.parseInt(r[0]);
-                measured.getData().add(new XYChart.Data<>(w, Double.parseDouble(r[1])));
-                f50.getData().add(new XYChart.Data<>(w, Double.parseDouble(r[2])));
-                f90.getData().add(new XYChart.Data<>(w, Double.parseDouble(r[3])));
-                f99.getData().add(new XYChart.Data<>(w, Double.parseDouble(r[4])));
+                if (w <= 0 || w > 8) {
+                    continue;
+                }
+                    double measuredSpeedup = Double.parseDouble(r[1]);
+                    double conservativeSpeedup = Double.parseDouble(r[3]);
+                    measured.getData().add(new XYChart.Data<>(w, measuredSpeedup));
+                    f50.getData().add(new XYChart.Data<>(w, conservativeSpeedup));
+                if (r.length > 7) {
+                    gustafson.getData().add(new XYChart.Data<>(w, Double.parseDouble(r[7])));
+                }
             } catch (Exception ignored) {}
         }
-        chart.getData().addAll(measured, f50, f90, f99);
+        chart.getData().addAll(measured, f50, gustafson);
         chart.getStyleClass().add("themed-chart");
         return chart;
     }

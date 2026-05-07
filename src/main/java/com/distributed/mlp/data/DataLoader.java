@@ -23,6 +23,7 @@ public class DataLoader {
     public static final int CHANNELS = 3;
     public static final long DEFAULT_SEED = 42L;
     private static final int MAX_IMAGES = 100;
+    private static final String MAX_SAMPLES_PROP = "mlp.maxSamples";
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("jpg", "jpeg", "png");
 
@@ -110,6 +111,25 @@ public class DataLoader {
                 }
             }
         }
+        int maxSamples = getMaxSamples();
+        if (maxSamples > 0 && shard.size() > maxSamples) {
+            return new ArrayList<>(shard.subList(0, maxSamples));
+        }
         return shard;
+    }
+
+    private static int getMaxSamples() {
+        String prop = System.getProperty(MAX_SAMPLES_PROP);
+        if (prop == null || prop.isBlank()) {
+            prop = System.getenv("MLP_MAX_SAMPLES");
+        }
+        if (prop == null || prop.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(prop.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 }

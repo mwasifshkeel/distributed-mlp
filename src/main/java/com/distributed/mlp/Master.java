@@ -3,10 +3,13 @@ package com.distributed.mlp;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,13 +32,9 @@ public final class Master {
     private static final int    DEFAULT_STEPS          = 5;
     private static final long   DEFAULT_SEED           = 42L;
 
-    private static final int TOTAL_PARAMETERS =
-            com.distributed.mlp.model.MLPModel.HIDDEN1_DIM * com.distributed.mlp.model.MLPModel.INPUT_DIM
-          + com.distributed.mlp.model.MLPModel.HIDDEN1_DIM
-          + com.distributed.mlp.model.MLPModel.HIDDEN2_DIM * com.distributed.mlp.model.MLPModel.HIDDEN1_DIM
-          + com.distributed.mlp.model.MLPModel.HIDDEN2_DIM
-          + com.distributed.mlp.model.MLPModel.OUTPUT_DIM  * com.distributed.mlp.model.MLPModel.HIDDEN2_DIM
-          + com.distributed.mlp.model.MLPModel.OUTPUT_DIM;
+    private static final Path LOG_PATH = Path.of("logs", "model.logs");
+
+        private static final int TOTAL_PARAMETERS = com.distributed.mlp.model.MLPModel.parameterCount();
 
     private final int    port;
     private final int    expectedWorkers;
@@ -45,6 +44,7 @@ public final class Master {
     private final int    stepsPerWorker;
     private final long   baseSeed;
     private final boolean enableCheckpoints;
+    private final boolean enableReplacer;
 
     private final AtomicInteger  totalUpdates      = new AtomicInteger(0);
     private final AtomicBoolean  shutdownInitiated = new AtomicBoolean(false);
@@ -78,12 +78,15 @@ public final class Master {
         this.stepsPerWorker  = stepsPerWorker;
         this.baseSeed        = baseSeed;
         this.enableCheckpoints = enableCheckpoints;
+        this.enableReplacer  = Boolean.parseBoolean(System.getProperty("mlp.enableReplacer", "false"));
         this.liveWorkers     = new AtomicInteger(0); // incremented as handlers register
-        this.workerReplacer  = new WorkerReplacer(
-                "127.0.0.1", port, expectedWorkers, stepsPerWorker, baseSeed);
+        this.workerReplacer  = enableReplacer
+            ? new WorkerReplacer("127.0.0.1", port, expectedWorkers, stepsPerWorker, baseSeed)
+            : null;
     }
 
     public static void main(String[] args) {
+        initLogging("master");
         int  port    = args.length >= 1 ? Integer.parseInt(args[0]) : DEFAULT_PORT;
         int  workers = args.length >= 2 ? Integer.parseInt(args[1]) : DEFAULT_WORKERS;
         int  steps   = args.length >= 3 ? Integer.parseInt(args[2]) : DEFAULT_STEPS;
@@ -126,7 +129,9 @@ public final class Master {
             System.out.println("[Master] Checkpointing disabled.");
         }
 
-        workerReplacer.start();
+        if (enableReplacer && workerReplacer != null) {
+            workerReplacer.start();
+        }
 
         // KEY FIX: keep the ServerSocket open for the entire training run.
         // We do NOT close it after accepting initial workers — the background
@@ -162,35 +167,37 @@ public final class Master {
             // is: accept the socket, start a new handler with the SAME workerId
             // that WorkerReplacer told us it spawned.  We do this by having
             // WorkerReplacer register the expected next ID in a shared queue.
-            Thread acceptLoop = new Thread(() -> {
-                while (!shutdownInitiated.get()) {
-                    try {
-                        // SO_TIMEOUT so the loop can notice shutdownInitiated
-                        serverSocket.setSoTimeout(1000);
-                        Socket s;
+            if (enableReplacer && workerReplacer != null) {
+                Thread acceptLoop = new Thread(() -> {
+                    while (!shutdownInitiated.get()) {
                         try {
-                            s = serverSocket.accept();
-                        } catch (java.net.SocketTimeoutException e) {
-                            continue;  // check shutdownInitiated and loop
-                        }
+                            // SO_TIMEOUT so the loop can notice shutdownInitiated
+                            serverSocket.setSoTimeout(1000);
+                            Socket s;
+                            try {
+                                s = serverSocket.accept();
+                            } catch (java.net.SocketTimeoutException e) {
+                                continue;  // check shutdownInitiated and loop
+                            }
 
-                        // Ask WorkerReplacer which ID it assigned to this connection
-                        int replacementId = workerReplacer.nextExpectedId();
-                        System.out.printf("[Master] Replacement worker connected: id=%d from %s%n",
-                                replacementId, s.getRemoteSocketAddress());
-                        startHandler(replacementId, s);
+                            // Ask WorkerReplacer which ID it assigned to this connection
+                            int replacementId = workerReplacer.nextExpectedId();
+                            System.out.printf("[Master] Replacement worker connected: id=%d from %s%n",
+                                    replacementId, s.getRemoteSocketAddress());
+                            startHandler(replacementId, s);
 
-                    } catch (IOException e) {
-                        if (!shutdownInitiated.get()) {
-                            System.err.println("[Master] Accept loop error: " + e.getMessage());
+                        } catch (IOException e) {
+                            if (!shutdownInitiated.get()) {
+                                System.err.println("[Master] Accept loop error: " + e.getMessage());
+                            }
+                            break;
                         }
-                        break;
                     }
-                }
-                System.out.println("[Master] Accept loop exited.");
-            }, "master-accept-loop");
-            acceptLoop.setDaemon(true);
-            acceptLoop.start();
+                    System.out.println("[Master] Accept loop exited.");
+                }, "master-accept-loop");
+                acceptLoop.setDaemon(true);
+                acceptLoop.start();
+            }
 
             // Wait for initial handler threads (replacements are daemons and
             // are cleaned up when the JVM exits after training completes)
@@ -205,7 +212,9 @@ public final class Master {
             // ServerSocket closed by try-with-resources → unblocks accept loop
         }
 
-        workerReplacer.stop();
+        if (enableReplacer && workerReplacer != null) {
+            workerReplacer.stop();
+        }
         System.out.println("[Master] Shutdown complete.");
     }
 
@@ -354,7 +363,9 @@ public final class Master {
                             System.err.printf("[Master] Worker %d silent for %ds — declaring dead.%n",
                                     workerId, silent / 1000);
                             unregisterChannel(channel);
-                            workerReplacer.reportDead(workerId);
+                            if (enableReplacer && workerReplacer != null) {
+                                workerReplacer.reportDead(workerId);
+                            }
                             try { socket.close(); } catch (IOException ignored) {}
                             break;
                         }
@@ -396,16 +407,22 @@ public final class Master {
                 if (!shutdownInitiated.get()) {
                     System.out.printf("[Master] Unexpected disconnect — requesting replacement "
                             + "for worker %d.%n", workerId);
-                    workerReplacer.reportDead(workerId);
+                    if (enableReplacer && workerReplacer != null) {
+                        workerReplacer.reportDead(workerId);
+                    }
                 }
             } catch (ProtocolException e) {
                 System.err.printf("[Master] Worker %d protocol error: %s%n",
                         workerId, e.getMessage());
-                if (!shutdownInitiated.get()) workerReplacer.reportDead(workerId);
+                if (!shutdownInitiated.get() && enableReplacer && workerReplacer != null) {
+                    workerReplacer.reportDead(workerId);
+                }
             } catch (IOException e) {
                 System.err.printf("[Master] Worker %d I/O error: %s%n",
                         workerId, e.getMessage());
-                if (!shutdownInitiated.get()) workerReplacer.reportDead(workerId);
+                if (!shutdownInitiated.get() && enableReplacer && workerReplacer != null) {
+                    workerReplacer.reportDead(workerId);
+                }
             }
         }
 
@@ -479,5 +496,39 @@ public final class Master {
                 out.flush();
             } finally { sendLock.unlock(); }
         }
+    }
+
+    private static void initLogging(String tag) {
+        PrintStream stderr = System.err;
+        try {
+            Path logPath = resolveLogPath();
+            if (logPath == null) {
+                return;
+            }
+            Path parent = logPath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            PrintStream fileOut = new PrintStream(new FileOutputStream(logPath.toFile(), true), true);
+            System.setOut(fileOut);
+            System.out.printf("[Log] %s logging to %s%n", tag, logPath.toAbsolutePath());
+        } catch (IOException e) {
+            stderr.println("[Log] Failed to init file logging: " + e.getMessage());
+        }
+    }
+
+    private static Path resolveLogPath() {
+        String value = System.getProperty("mlp.logFile");
+        if (value == null || value.isBlank()) {
+            value = System.getenv("MLP_LOG_FILE");
+        }
+        if (value == null || value.isBlank()) {
+            return LOG_PATH;
+        }
+        String trimmed = value.trim();
+        if (trimmed.equalsIgnoreCase("off")) {
+            return null;
+        }
+        return Path.of(trimmed);
     }
 }

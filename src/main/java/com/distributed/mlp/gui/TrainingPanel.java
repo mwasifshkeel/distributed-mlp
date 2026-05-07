@@ -1,5 +1,7 @@
 package com.distributed.mlp.gui;
 
+import com.distributed.mlp.model.MLPModel;
+
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -36,6 +38,7 @@ public class TrainingPanel {
     private Spinner<Integer> epochsSpinner;
     private TextField stepsAutoField;
     private Spinner<Integer> computeThreadsSpinner;
+    private Spinner<Integer> sampleLimitSpinner;
     private ChoiceBox<String> modeChoice;
 
     public TrainingPanel(LogConsole log) {
@@ -92,24 +95,26 @@ public class TrainingPanel {
         );
         modeChoice.getSelectionModel().selectFirst();
 
+        addRow(grid, 0, "Workers",        workersSpinner, "Number of Worker JVMs to launch");
+        addRow(grid, 1, "Epochs",         epochsSpinner,  "Number of passes over the dataset");
+        sampleLimitSpinner = intSpinner(0, TOTAL_SAMPLES, 0);
+        addRow(grid, 2, "Sample Limit", sampleLimitSpinner, "0 = full dataset; otherwise use N samples total");
         // Auto‑calculated steps per worker (read-only)
         stepsAutoField = new TextField();
         stepsAutoField.setEditable(false);
         stepsAutoField.getStyleClass().add("formula-field");  // defined in CSS
         GridPane.setHgrow(stepsAutoField, Priority.ALWAYS);
         updateAutoSteps();  // initial value
-
-        addRow(grid, 0, "Workers",        workersSpinner, "Number of Worker JVMs to launch");
-        addRow(grid, 1, "Epochs",         epochsSpinner,  "Number of passes over the dataset");
-        addRow(grid, 2, "→ Steps/Worker", stepsAutoField, "Auto: (50k / workers / 32) * epochs");
-        addRow(grid, 3, "Master Port",    portSpinner,     "TCP port for the parameter server");
-        addRow(grid, 4, "Random Seed",    seedSpinner,     "Seed for deterministic sharding & weight init");
-        addRow(grid, 5, "Compute Threads", computeThreadsSpinner, "Per-worker compute threads");
-        addRow(grid, 6, "Mode",           modeChoice, "Matches provided shell scripts");
+        addRow(grid, 3, "→ Steps/Worker", stepsAutoField, "Auto: (samples / workers / 32) * epochs");
+        addRow(grid, 4, "Master Port",    portSpinner,     "TCP port for the parameter server");
+        addRow(grid, 5, "Random Seed",    seedSpinner,     "Seed for deterministic sharding & weight init");
+        addRow(grid, 6, "Compute Threads", computeThreadsSpinner, "Per-worker compute threads");
+        addRow(grid, 7, "Mode",           modeChoice, "Matches provided shell scripts");
 
         // Listeners to update steps whenever workers or epochs change
         workersSpinner.valueProperty().addListener((obs, old, val) -> updateAutoSteps());
         epochsSpinner.valueProperty().addListener((obs, old, val) -> updateAutoSteps());
+        sampleLimitSpinner.valueProperty().addListener((obs, old, val) -> updateAutoSteps());
 
         // Architecture info (read-only)
         Label archLabel = new Label("Architecture:  3072 → 128 (ReLU) → 64 (ReLU) → 10 (Softmax)   |   Xavier init   |   Async SGD   |   Mini-batch 32");
@@ -124,8 +129,17 @@ public class TrainingPanel {
     private void updateAutoSteps() {
         int workers = workersSpinner.getValue();
         int epochs  = epochsSpinner.getValue();
-        int stepsPerWorker = (TOTAL_SAMPLES / workers / MINI_BATCH_SIZE) * epochs;
+        int totalSamples = getEffectiveTotalSamples();
+        int stepsPerWorker = Math.max(1, (totalSamples / workers / MINI_BATCH_SIZE) * epochs);
         stepsAutoField.setText(String.valueOf(stepsPerWorker));
+    }
+
+    private int getEffectiveTotalSamples() {
+        int limit = sampleLimitSpinner.getValue();
+        if (limit <= 0) {
+            return TOTAL_SAMPLES;
+        }
+        return Math.min(limit, TOTAL_SAMPLES);
     }
 
     private Node buildControlSection() {
@@ -171,7 +185,7 @@ public class TrainingPanel {
         cards.getChildren().addAll(
             infoCard("Target Class", "10 (CIFAR-10)"),
             infoCard("Input Dim", "3072 (32×32×3)"),
-            infoCard("Parameters", "402,250"),
+            infoCard("Parameters", String.format("%,d", MLPModel.parameterCount())),
             infoCard("Protocol", "Async TCP Push/Pull"),
             infoCard("Compression", "float32 gradients")
         );
@@ -188,6 +202,7 @@ public class TrainingPanel {
         int steps   = Integer.parseInt(stepsAutoField.getText());
         int port    = portSpinner.getValue();
         int seed    = seedSpinner.getValue();
+        int totalSamples = getEffectiveTotalSamples();
 
         int computeThreads = computeThreadsSpinner.getValue();
         String mode = modeChoice.getSelectionModel().getSelectedItem();
@@ -198,7 +213,8 @@ public class TrainingPanel {
         stopBtn.setDisable(false);
         log.clear();
         log.append("Starting distributed training: workers=" + workers + ", steps=" + steps
-            + ", port=" + port + ", seed=" + seed + ", computeThreads=" + computeThreads);
+            + ", port=" + port + ", seed=" + seed + ", computeThreads=" + computeThreads
+            + ", totalSamples=" + totalSamples);
 
         String script = switch (mode) {
             case "Baseline (run_baseline.sh)" -> "run_baseline.sh";
@@ -206,10 +222,17 @@ public class TrainingPanel {
             default -> "run.sh";
         };
 
+        java.util.Map<String, String> env = new java.util.HashMap<>();
+        env.put("MLP_COMPUTE_THREADS", String.valueOf(computeThreads));
+        if (totalSamples < TOTAL_SAMPLES) {
+            env.put("MLP_MAX_SAMPLES", String.valueOf(totalSamples));
+            env.put("MLP_TOTAL_SAMPLES", String.valueOf(totalSamples));
+        }
+
         ProcessManager.getInstance().launchScript(
             script,
             java.util.List.of(String.valueOf(port), String.valueOf(workers), String.valueOf(computeThreads)),
-            java.util.Map.of("MLP_COMPUTE_THREADS", String.valueOf(computeThreads)),
+            env,
             log.asConsumer(),
             code -> {
                 boolean success = code == 0;

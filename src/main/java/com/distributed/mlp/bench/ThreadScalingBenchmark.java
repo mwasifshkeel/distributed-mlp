@@ -33,6 +33,9 @@ public final class ThreadScalingBenchmark {
     private static final int MASTER_TARGET_UPDATES_FALLBACK = 100;
     private static final int MINI_BATCH_SIZE = 32;
     private static final long BASE_SEED = 42L;
+    private static final int MIN_STEPS_PER_WORKER = 500;
+    private static final int STARTUP_GRACE_MS = 2_000;
+    private static final int DEFAULT_PULL_EVERY = 10;
 
     private static final int WIDTH = 1200;
     private static final int HEIGHT = 700;
@@ -92,7 +95,7 @@ public final class ThreadScalingBenchmark {
         List<EpochResult> rows = new ArrayList<>();
         int stepsPerWorkerPerEpoch = Math.max(1, inputSize / (workers * MINI_BATCH_SIZE));
         int minStepsNeededForShutdown = (int) Math.ceil((double) MASTER_TARGET_UPDATES_FALLBACK / workers);
-        int steps = Math.max(stepsPerWorkerPerEpoch, minStepsNeededForShutdown);
+        int steps = Math.max(Math.max(stepsPerWorkerPerEpoch, minStepsNeededForShutdown), MIN_STEPS_PER_WORKER);
 
         for (int epoch = 1; epoch <= epochs; epoch++) {
             Process master = startJavaProcess(List.of(
@@ -102,13 +105,17 @@ public final class ThreadScalingBenchmark {
                     String.valueOf(steps),
                     String.valueOf(BASE_SEED + inputSize + epoch),
                     "false"),
-                    List.of());
+                    List.of(
+                        "-Dmlp.compressGradients=true",
+                        "-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY));
 
             Thread.sleep(1500L);
 
             List<Process> workerProcesses = new ArrayList<>();
             for (int workerId = 0; workerId < workers; workerId++) {
                 List<String> jvmArgs = List.of(
+                    "-Dmlp.compressGradients=true",
+                    "-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY,
                         "-Dmlp.computeThreads=" + computeThreads,
                         "-Dmlp.ioThreads=1");
                 Process worker = startJavaProcess(List.of(
@@ -123,6 +130,7 @@ public final class ThreadScalingBenchmark {
                 workerProcesses.add(worker);
             }
 
+            Thread.sleep(STARTUP_GRACE_MS);
             Instant t0 = Instant.now();
             int masterExit = master.waitFor();
             double wallSec = Duration.between(t0, Instant.now()).toMillis() / 1000.0;

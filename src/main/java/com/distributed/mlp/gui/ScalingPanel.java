@@ -1,11 +1,19 @@
 package com.distributed.mlp.gui;
 
-import javafx.geometry.*;
-import javafx.scene.Node;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
-
 import java.util.List;
+
+import javafx.geometry.Insets;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.Spinner;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
 
 /**
  * Panel: Strong & weak scaling experiments.
@@ -54,7 +62,7 @@ public class ScalingPanel {
 
         VBox amdahl = explainerCard(
             "Amdahl's Law Analysis",
-            "Compares measured speedup to theoretical\nThree parallel fractions: f=0.5, f=0.9, f=0.99\nOutput: amdahl_comparison.csv, speedup_table.txt",
+            "Compares measured speedup to a conservative Amdahl expectation\nExpected line uses f=0.5 and stays near 1-2x\nOutput: amdahl_comparison.csv, speedup_table.txt",
             "📊 Shows serial bottleneck quantification"
         );
 

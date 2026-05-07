@@ -1,13 +1,14 @@
 package com.distributed.mlp.optimisation;
 
-import com.distributed.mlp.model.MLPModel;
-import com.distributed.mlp.protocol.WeightSerializer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Locale;
+
+import com.distributed.mlp.model.MLPModel;
+import com.distributed.mlp.protocol.WeightSerializer;
 
 /**
  * Gradient compression helpers for reducing communication overhead in
@@ -49,12 +50,7 @@ public final class GradientCompressor {
      * Total model parameter count used for payload-size estimates.
      */
     public static int totalParameterCount() {
-        return MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                + MLPModel.OUTPUT_DIM;
+        return MLPModel.parameterCount();
     }
 
     /**

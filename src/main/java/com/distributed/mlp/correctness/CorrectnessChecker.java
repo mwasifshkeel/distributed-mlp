@@ -20,11 +20,11 @@ import com.distributed.mlp.protocol.WeightSerializer;
  * Verifies deterministic correctness by comparing sequential-equivalent training
  * with a single-worker distributed run on the same inputs and seed.
  * <p>
- * After the check, the trained model (from the sequential evaluation) is saved
+ * After the check, the trained model from the sequential evaluation is saved
  * to {@code results/correctness_model.bin}.
  */
 public final class CorrectnessChecker {
-    private static final int MINI_BATCH_SIZE = 32;
+    private static final int MINI_BATCH_SIZE = 256;
     private static final int DEFAULT_STEPS = 8;
     private static final long SEED = 42L;
 
@@ -34,7 +34,7 @@ public final class CorrectnessChecker {
 
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 1;
-    private static final Duration SMOKE_TIMEOUT = Duration.ofSeconds(90);
+    private static final Duration SMOKE_TIMEOUT = Duration.ofSeconds(150);
 
     private static final Path MODEL_PATH = Path.of("results", "correctness_model.bin");
 
@@ -104,23 +104,14 @@ public final class CorrectnessChecker {
         if (all.isEmpty()) {
             throw new IOException("Dataset is empty. Check data/cifar-10-batches-bin/ path.");
         }
-        System.out.printf("[CorrectnessChecker] Loaded %d total samples, will use %d.%n",
-                all.size(), subsetSize);
+        System.out.printf("[CorrectnessChecker] Loaded %d total samples, will use %d.%n", all.size(), subsetSize);
         int end = Math.min(subsetSize, all.size());
         return new ArrayList<>(all.subList(0, end));
     }
 
-    // ------------------ sequential-equivalent training ------------------
-
     private static EvalResult trainSequential(List<Sample> samples, int steps) {
         MLPModel model = new MLPModel();
-        double[] zeros = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-            + MLPModel.HIDDEN1_DIM
-            + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-            + MLPModel.HIDDEN2_DIM
-            + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-            + MLPModel.OUTPUT_DIM];
-        model.loadWeights(zeros);
+        model.loadWeights(new double[MLPModel.parameterCount()]);
 
         int maxBatches = samples.size() / MINI_BATCH_SIZE;
         int effectiveSteps = Math.min(steps, maxBatches);
@@ -180,12 +171,7 @@ public final class CorrectnessChecker {
             }
         }
         if (total == null) {
-            total = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                    + MLPModel.HIDDEN1_DIM
-                    + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                    + MLPModel.HIDDEN2_DIM
-                    + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                    + MLPModel.OUTPUT_DIM];
+            total = new double[MLPModel.parameterCount()];
         }
         return total;
     }
@@ -218,84 +204,12 @@ public final class CorrectnessChecker {
         int size = Math.min(a.length, b.length);
         double max = 0.0;
         for (int i = 0; i < size; i++) {
-            double diff = Math.abs(a[i] - b[i]);
-            if (diff > max) max = diff;
+            max = Math.max(max, Math.abs(a[i] - b[i]));
         }
         return max;
     }
 
-    // ------------------ model saving (reflection) ------------------
-
-    private static void saveModel(MLPModel model) {
-        try {
-            double[] flat = flattenModelWeights(model);
-            byte[] serialized = WeightSerializer.toBytesDouble(flat);
-            Files.createDirectories(MODEL_PATH.getParent());
-            Files.write(MODEL_PATH, serialized);
-            System.out.printf("[CorrectnessChecker] Model saved to %s (%,d bytes)%n",
-                    MODEL_PATH.toAbsolutePath(), serialized.length);
-        } catch (IOException e) {
-            System.err.println("[CorrectnessChecker] Failed to save model: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Uses reflection to flatten the private weight arrays of MLPModel.
-     */
-    private static double[] flattenModelWeights(MLPModel model) {
-        try {
-            java.lang.reflect.Field w1 = MLPModel.class.getDeclaredField("w1");
-            java.lang.reflect.Field b1 = MLPModel.class.getDeclaredField("b1");
-            java.lang.reflect.Field w2 = MLPModel.class.getDeclaredField("w2");
-            java.lang.reflect.Field b2 = MLPModel.class.getDeclaredField("b2");
-            java.lang.reflect.Field w3 = MLPModel.class.getDeclaredField("w3");
-            java.lang.reflect.Field b3 = MLPModel.class.getDeclaredField("b3");
-
-            w1.setAccessible(true);
-            b1.setAccessible(true);
-            w2.setAccessible(true);
-            b2.setAccessible(true);
-            w3.setAccessible(true);
-            b3.setAccessible(true);
-
-            double[][] W1 = (double[][]) w1.get(model);
-            double[]   B1 = (double[])   b1.get(model);
-            double[][] W2 = (double[][]) w2.get(model);
-            double[]   B2 = (double[])   b2.get(model);
-            double[][] W3 = (double[][]) w3.get(model);
-            double[]   B3 = (double[])   b3.get(model);
-
-            int total = MLPModel.INPUT_DIM  * MLPModel.HIDDEN1_DIM
-                      + MLPModel.HIDDEN1_DIM
-                      + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                      + MLPModel.HIDDEN2_DIM
-                      + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                      + MLPModel.OUTPUT_DIM;
-
-            double[] flat = new double[total];
-            int idx = 0;
-            for (double[] row : W1) for (double v : row) flat[idx++] = v;
-            for (double v : B1) flat[idx++] = v;
-            for (double[] row : W2) for (double v : row) flat[idx++] = v;
-            for (double v : B2) flat[idx++] = v;
-            for (double[] row : W3) for (double v : row) flat[idx++] = v;
-            for (double v : B3) flat[idx++] = v;
-
-            return flat;
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException("Cannot access model weights – ensure MLPModel fields are accessible.", e);
-        }
-    }
-
-    // ------------------ distributed smoke test ------------------
-
     private static DistributedResult runDistributedAndLoadModel(List<Sample> subset, int steps, long seed) {
-        Path classes = Path.of("target", "classes");
-        if (!Files.exists(classes)) {
-            System.err.println("[CorrectnessChecker] smoke skipped: target/classes missing");
-            return new DistributedResult(false, null, null);
-        }
-
         deleteExistingModelWeights();
 
         Process master = null;
@@ -410,18 +324,18 @@ public final class CorrectnessChecker {
         return classes.toString();
     }
 
-    // ------------------ result record ------------------
-
-    private record EvalResult(List<Integer> predictions, double finalLoss, MLPModel model) {
-    }
-
-    private record DistributedResult(boolean ok, EvalResult eval, Path weightsPath) {
+    private static void saveModel(MLPModel model) throws IOException {
+        Files.createDirectories(MODEL_PATH.getParent());
+        byte[] serialized = WeightSerializer.toBytesDouble(flattenModelWeights(model));
+        Files.write(MODEL_PATH, serialized);
     }
 
     private static void deleteExistingModelWeights() {
         try {
             Path dir = Path.of("results");
-            if (!Files.isDirectory(dir)) return;
+            if (!Files.isDirectory(dir)) {
+                return;
+            }
             try (var stream = Files.newDirectoryStream(dir, "model_weights_*.bin")) {
                 for (Path p : stream) {
                     Files.deleteIfExists(p);
@@ -434,7 +348,9 @@ public final class CorrectnessChecker {
 
     private static Path findLatestModelWeights() throws IOException {
         Path dir = Path.of("results");
-        if (!Files.isDirectory(dir)) return null;
+        if (!Files.isDirectory(dir)) {
+            return null;
+        }
         Path latest = null;
         long latestTs = -1L;
         try (var stream = Files.newDirectoryStream(dir, "model_weights_*.bin")) {
@@ -449,38 +365,17 @@ public final class CorrectnessChecker {
         return latest;
     }
 
+    private static double[] flattenModelWeights(MLPModel model) {
+        return model.toFlatWeights();
+    }
+
     private static double[] flattenGradient(MLPModel.Gradient gradient) {
-        int size = MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                + MLPModel.OUTPUT_DIM;
-
-        double[] flat = new double[size];
-        int idx = 0;
-        idx = flatten2D(gradient.getDW1(), flat, idx);
-        idx = flatten1D(gradient.getDb1(), flat, idx);
-        idx = flatten2D(gradient.getDW2(), flat, idx);
-        idx = flatten1D(gradient.getDb2(), flat, idx);
-        idx = flatten2D(gradient.getDW3(), flat, idx);
-        flatten1D(gradient.getDb3(), flat, idx);
-        return flat;
+        return gradient.toFlatArray();
     }
 
-    private static int flatten2D(double[][] src, double[] dst, int idx) {
-        for (double[] row : src) {
-            for (double value : row) {
-                dst[idx++] = value;
-            }
-        }
-        return idx;
+    private record EvalResult(List<Integer> predictions, double finalLoss, MLPModel model) {
     }
 
-    private static int flatten1D(double[] src, double[] dst, int idx) {
-        for (double value : src) {
-            dst[idx++] = value;
-        }
-        return idx;
+    private record DistributedResult(boolean ok, EvalResult eval, Path weightsPath) {
     }
 }

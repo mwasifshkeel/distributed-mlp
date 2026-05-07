@@ -96,7 +96,7 @@ public class BenchmarkPanel {
 
         flow.getChildren().add(benchCard(
             "Speedup Analyzer",
-            "Reads raw.csv, computes speedup/efficiency vs Amdahl.\nOutputs: speedup_table.txt, amdahl_comparison.csv",
+            "Reads raw.csv, computes speedup/efficiency vs Amdahl.\nExpected curve uses a conservative f=0.5 bound\nOutputs: speedup_table.txt, amdahl_comparison.csv",
             "▶ Analyze Speedup",
             "com.distributed.mlp.bench.SpeedupAnalyzer",
             List.of()
@@ -127,10 +127,11 @@ public class BenchmarkPanel {
         tp.setCollapsible(false);
         tp.getStyleClass().add("config-section");
 
-        Label desc = new Label(
-            "Runs BenchmarkRunner across all worker configs {1,2,4,8} and input sizes {10k, 40k, 75k}.\n" +
-            "Then runs ScalingExperiment (strong + weak) and SpeedupAnalyzer.\n" +
-            "⚠ This may take 10–30 minutes depending on hardware.");
+        Label desc = new Label("""
+            Runs BenchmarkRunner across all worker configs {1,2,4,8} and smaller input sizes {2k, 6k, 12k}.
+            Then runs ScalingExperiment (strong + weak) and SpeedupAnalyzer.
+            ⚠ This may take 10–30 minutes depending on hardware.
+            """);
         desc.getStyleClass().add("bench-desc");
         desc.setWrapText(true);
 

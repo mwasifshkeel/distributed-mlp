@@ -1,22 +1,25 @@
 package com.distributed.mlp.baseline;
 
-import com.distributed.mlp.data.DataLoader;
-import com.distributed.mlp.data.DataLoader.Sample;
-import com.distributed.mlp.model.MLPModel;
-import com.distributed.mlp.model.MathUtils;
-import com.distributed.mlp.protocol.WeightSerializer;
-
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import com.distributed.mlp.data.DataLoader;
+import com.distributed.mlp.data.DataLoader.Sample;
+import com.distributed.mlp.model.MLPModel;
+import com.distributed.mlp.model.MathUtils;
+import com.distributed.mlp.protocol.WeightSerializer;
 
 /**
  * Synchronous SGD baseline using multiple worker threads coordinated by a CyclicBarrier.
@@ -26,6 +29,7 @@ public final class SyncSGDBaseline {
     private static final int DEFAULT_WORKERS = 3;
     private static final int DEFAULT_EPOCHS = 5;
     private static final long DEFAULT_SEED = 42L;
+    private static final double LEARNING_RATE = 1e-3;
     private static final Path OUTPUT_CSV = Path.of("results", "sync_results.csv");
     private static final Path MODEL_PATH = Path.of("results", "sync_model.bin");
 
@@ -39,7 +43,7 @@ public final class SyncSGDBaseline {
 
         try {
             run(workers, epochs, seed);
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException | BrokenBarrierException | RuntimeException e) {
             System.err.println("SyncSGDBaseline failed: " + e.getMessage());
             e.printStackTrace(System.err);
         }
@@ -80,6 +84,8 @@ public final class SyncSGDBaseline {
             for (int epoch = 1; epoch <= epochs; epoch++) {
                 long epochStart = System.nanoTime();
                 int samplesPerWorker = Math.max(1, dataset.size() / workers);
+                List<Sample> epochSamples = new ArrayList<>(dataset);
+                Collections.shuffle(epochSamples, new Random(seed + epoch));
 
                 AtomicInteger nextIdx = new AtomicInteger(0);
                 AtomicInteger correct = new AtomicInteger(0);
@@ -96,15 +102,16 @@ public final class SyncSGDBaseline {
                         try {
                             for (int i = 0; i < samplesPerWorker; i++) {
                                 int idx = nextIdx.getAndIncrement();
-                                if (idx >= dataset.size()) {
+                                if (idx >= epochSamples.size()) {
                                     break;
                                 }
-                                Sample sample = dataset.get(idx);
+                                Sample sample = epochSamples.get(idx);
 
                                 double[] probs;
                                 synchronized (modelLock) {
                                     probs = sharedModel.forward(sample.pixels());
-                                    sharedModel.backward(sample.pixels(), sample.label());
+                                    MLPModel.Gradient gradient = sharedModel.backward(sample.pixels(), sample.label());
+                                    applyGradient(sharedModel, gradient, LEARNING_RATE);
                                 }
 
                                 int pred = argmax(probs);
@@ -166,48 +173,16 @@ public final class SyncSGDBaseline {
      * Uses reflection to flatten the private weight arrays of MLPModel.
      */
     private static double[] flattenModelWeights(MLPModel model) {
-        try {
-            java.lang.reflect.Field w1 = MLPModel.class.getDeclaredField("w1");
-            java.lang.reflect.Field b1 = MLPModel.class.getDeclaredField("b1");
-            java.lang.reflect.Field w2 = MLPModel.class.getDeclaredField("w2");
-            java.lang.reflect.Field b2 = MLPModel.class.getDeclaredField("b2");
-            java.lang.reflect.Field w3 = MLPModel.class.getDeclaredField("w3");
-            java.lang.reflect.Field b3 = MLPModel.class.getDeclaredField("b3");
+        return model.toFlatWeights();
+    }
 
-            w1.setAccessible(true);
-            b1.setAccessible(true);
-            w2.setAccessible(true);
-            b2.setAccessible(true);
-            w3.setAccessible(true);
-            b3.setAccessible(true);
-
-            double[][] W1 = (double[][]) w1.get(model);
-            double[]   B1 = (double[])   b1.get(model);
-            double[][] W2 = (double[][]) w2.get(model);
-            double[]   B2 = (double[])   b2.get(model);
-            double[][] W3 = (double[][]) w3.get(model);
-            double[]   B3 = (double[])   b3.get(model);
-
-            int total = MLPModel.INPUT_DIM  * MLPModel.HIDDEN1_DIM
-                      + MLPModel.HIDDEN1_DIM
-                      + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                      + MLPModel.HIDDEN2_DIM
-                      + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                      + MLPModel.OUTPUT_DIM;
-
-            double[] flat = new double[total];
-            int idx = 0;
-            for (double[] row : W1) for (double v : row) flat[idx++] = v;
-            for (double v : B1) flat[idx++] = v;
-            for (double[] row : W2) for (double v : row) flat[idx++] = v;
-            for (double v : B2) flat[idx++] = v;
-            for (double[] row : W3) for (double v : row) flat[idx++] = v;
-            for (double v : B3) flat[idx++] = v;
-
-            return flat;
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException("Cannot access model weights – ensure MLPModel fields are accessible.", e);
+    private static void applyGradient(MLPModel model, MLPModel.Gradient gradient, double learningRate) {
+        double[] weights = flattenModelWeights(model);
+        double[] delta = gradient.toFlatArray();
+        for (int i = 0; i < weights.length; i++) {
+            weights[i] -= learningRate * delta[i];
         }
+        model.loadWeights(weights);
     }
 
     private static int argmax(double[] values) {

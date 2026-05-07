@@ -45,11 +45,12 @@ public final class BenchPlotter {
             plotSequential();
             plotScaling();
             plotAmdahl();
+            plotGustafson();
             plotSerialBench();
             plotOptimization();
             plotThreadScaling();
             System.out.println("Plots saved under: " + PLOTS_DIR.toAbsolutePath());
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             System.err.println("BenchPlotter failed: " + e.getMessage());
             e.printStackTrace(System.err);
             System.exit(1);
@@ -158,14 +159,12 @@ public final class BenchPlotter {
         List<String[]> rows = readCsv(AMDAHL_CSV);
         List<Double> workersRaw = columnAsDouble(rows, 0);
         List<Double> measuredRaw = columnAsDouble(rows, 1);
-        List<Double> amdahlRaw = columnAsDouble(rows, 2);
         List<Double> f05Raw = columnAsDouble(rows, 3);
         List<Double> f09Raw = columnAsDouble(rows, 4);
         List<Double> f099Raw = columnAsDouble(rows, 5);
 
         List<Double> workers = new ArrayList<>();
         List<Double> measured = new ArrayList<>();
-        List<Double> amdahl = new ArrayList<>();
         List<Double> f05 = new ArrayList<>();
         List<Double> f09 = new ArrayList<>();
         List<Double> f099 = new ArrayList<>();
@@ -177,7 +176,6 @@ public final class BenchPlotter {
             }
             workers.add(w);
             measured.add(getOrNaN(measuredRaw, i));
-            amdahl.add(getOrNaN(amdahlRaw, i));
             f05.add(getOrNaN(f05Raw, i));
             f09.add(getOrNaN(f09Raw, i));
             f099.add(getOrNaN(f099Raw, i));
@@ -188,10 +186,45 @@ public final class BenchPlotter {
                 "workers",
                 "speedup",
                 workers,
-                List.of(measured, amdahl, f05, f09, f099),
-                List.of("measured", "estimated", "f=0.5", "f=0.9", "f=0.99"),
+                List.of(measured, f05, f09, f099),
+                List.of("measured", "expected (f=0.5)", "expected (f=0.9)", "expected (f=0.99)"),
             PLOTS_DIR.resolve("amdahl_speedup.png"),
             true);
+    }
+
+    private static void plotGustafson() throws IOException {
+        if (!Files.exists(AMDAHL_CSV)) {
+            System.err.println("[BenchPlotter] Missing amdahl_comparison.csv, skipping.");
+            return;
+        }
+        List<String[]> rows = readCsv(AMDAHL_CSV);
+        List<Double> workersRaw = columnAsDouble(rows, 0);
+        List<Double> measuredRaw = columnAsDouble(rows, 1);
+        List<Double> gustafsonRaw = columnAsDouble(rows, 7);
+
+        List<Double> workers = new ArrayList<>();
+        List<Double> measured = new ArrayList<>();
+        List<Double> gustafson = new ArrayList<>();
+
+        for (int i = 0; i < workersRaw.size(); i++) {
+            double w = workersRaw.get(i);
+            if (w <= 0 || w > 8) {
+                continue;
+            }
+            workers.add(w);
+            measured.add(getOrNaN(measuredRaw, i));
+            gustafson.add(getOrNaN(gustafsonRaw, i));
+        }
+
+        lineChart(
+                "Gustafson Speedup Comparison",
+                "workers",
+                "speedup",
+                workers,
+                List.of(measured, gustafson),
+                List.of("measured", "Gustafson"),
+                PLOTS_DIR.resolve("gustafson_speedup.png"),
+                true);
     }
 
     private static void plotSerialBench() throws IOException {

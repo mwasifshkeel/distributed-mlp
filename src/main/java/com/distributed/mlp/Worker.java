@@ -2,9 +2,13 @@ package com.distributed.mlp;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -36,7 +40,10 @@ public final class Worker {
     private static final long DEFAULT_SEED = 42L;
     private static final int DEFAULT_IO_THREADS = 1;
     private static final int QUEUE_CAPACITY = 256;
-    private static final int MINI_BATCH_SIZE = 32;
+    private static final int DEFAULT_MINI_BATCH_SIZE = 256;
+    private static final Path LOG_PATH = Path.of("logs", "model.logs");
+    private static volatile PrintStream consoleOut = System.out;
+    private static volatile boolean fileLoggingEnabled = false;
 
     private final String host;
     private final int port;
@@ -62,6 +69,7 @@ public final class Worker {
         int steps = args.length >= 5 ? Integer.parseInt(args[4]) : DEFAULT_STEPS;
         long seed = args.length >= 6 ? Long.parseLong(args[5]) : DEFAULT_SEED;
 
+        initLogging("worker-" + workerId);
         Worker worker = new Worker(host, port, workerId, totalWorkers, steps, seed);
         try {
             worker.run();
@@ -91,9 +99,10 @@ public final class Worker {
                 + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM + MLPModel.OUTPUT_DIM);
 
         BlockingQueue<Sample> sampleQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+        int miniBatchSize = resolveMiniBatchSize();
         int computeThreads = Integer.parseInt(System.getProperty(
             "mlp.computeThreads",
-            String.valueOf(Math.max(1, Runtime.getRuntime().availableProcessors() - 1))));
+            String.valueOf(defaultComputeThreads(totalWorkers))));
         int ioThreads = Integer.parseInt(System.getProperty(
             "mlp.ioThreads",
             String.valueOf(DEFAULT_IO_THREADS)));
@@ -104,7 +113,7 @@ public final class Worker {
         ExecutorService computePool = Executors.newFixedThreadPool(1);
         ExecutorService batchPool = Executors.newFixedThreadPool(computeThreads);
 
-        int totalSamplesToEnqueue = steps * MINI_BATCH_SIZE;
+        int totalSamplesToEnqueue = steps * miniBatchSize;
         AtomicInteger enqueuedSamples = new AtomicInteger(0);
         AtomicInteger nextBatch = new AtomicInteger(0);
         AtomicInteger completedBatches = new AtomicInteger(0);
@@ -113,7 +122,7 @@ public final class Worker {
 
         boolean compressGradients = Boolean.parseBoolean(
             System.getProperty("mlp.compressGradients", "false"));
-        int pullEvery = Integer.parseInt(System.getProperty("mlp.pullEvery", "1"));
+        int pullEvery = Integer.parseInt(System.getProperty("mlp.pullEvery", "10"));
         boolean verboseSamples = Boolean.parseBoolean(
             System.getProperty("mlp.verboseSamples", "false"));
         if (pullEvery <= 0) {
@@ -180,7 +189,7 @@ public final class Worker {
                         long batchStart = System.currentTimeMillis();
 
                         List<Sample> miniBatch = assembleMiniBatch(
-                                sampleQueue, stopFlag, enqueuedSamples, totalSamplesToEnqueue);
+                            sampleQueue, stopFlag, enqueuedSamples, totalSamplesToEnqueue, miniBatchSize);
 
                         System.out.printf("[Worker %d] Batch %d assembled: %d samples (%.0fms)%n",
                                 workerId, batchIdx + 1, miniBatch.size(),
@@ -246,9 +255,12 @@ public final class Worker {
                         }
 
                         int done = completedBatches.incrementAndGet();
-                        System.out.printf("[Worker %d] ✓ Batch %d/%d complete in %.0fms%n",
+                        if (fileLoggingEnabled) {
+                            System.out.printf("[Worker %d] Batch %d/%d complete in %.0fms%n",
                                 workerId, done, steps,
                                 (double) (System.currentTimeMillis() - batchStart));
+                        }
+                        consoleOut.printf("[Worker %d] Batch %d/%d complete%n", workerId, done, steps);
 
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -340,12 +352,7 @@ public final class Worker {
     }
 
     private static double[] decodeWeights(byte[] payload) {
-        int expectedDouble = MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                + MLPModel.OUTPUT_DIM;
+        int expectedDouble = MLPModel.parameterCount();
         int doubleBytes = expectedDouble * Double.BYTES;
         int floatBytes = expectedDouble * Float.BYTES;
 
@@ -369,9 +376,10 @@ public final class Worker {
             BlockingQueue<Sample> sampleQueue,
             AtomicBoolean stopFlag,
             AtomicInteger enqueuedSamples,
-            int totalSamplesToEnqueue) throws InterruptedException {
-        List<Sample> miniBatch = new ArrayList<>(MINI_BATCH_SIZE);
-        while (!stopFlag.get() && miniBatch.size() < MINI_BATCH_SIZE) {
+            int totalSamplesToEnqueue,
+            int miniBatchSize) throws InterruptedException {
+        List<Sample> miniBatch = new ArrayList<>(miniBatchSize);
+        while (!stopFlag.get() && miniBatch.size() < miniBatchSize) {
             Sample sample = sampleQueue.poll(2, TimeUnit.SECONDS);
             if (sample != null) {
                 miniBatch.add(sample);
@@ -385,22 +393,7 @@ public final class Worker {
     }
 
     private static double[] flattenGradient(Gradient gradient) {
-        int size = MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM
-                + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM
-                + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                + MLPModel.OUTPUT_DIM;
-
-        double[] flat = new double[size];
-        int idx = 0;
-        idx = flatten2D(gradient.getDW1(), flat, idx);
-        idx = flatten1D(gradient.getDb1(), flat, idx);
-        idx = flatten2D(gradient.getDW2(), flat, idx);
-        idx = flatten1D(gradient.getDb2(), flat, idx);
-        idx = flatten2D(gradient.getDW3(), flat, idx);
-        flatten1D(gradient.getDb3(), flat, idx);
-        return flat;
+        return gradient.toFlatArray();
     }
 
     private static double[] computeBatchGradientParallel(
@@ -429,7 +422,7 @@ public final class Worker {
                         System.out.printf("[Worker %d] Batch %d: forward sample %d/%d%n",
                                 workerId, batchNumber, i + 1, miniBatch.size());
                     }
-                    double[] probs = model.forward(sample.pixels());
+                    model.forward(sample.pixels());
                     if (verboseSamples) {
                         System.out.printf("[Worker %d] Batch %d: backward sample %d/%d%n",
                                 workerId, batchNumber, i + 1, miniBatch.size());
@@ -461,30 +454,9 @@ public final class Worker {
         }
 
         if (total == null) {
-            total = new double[MLPModel.INPUT_DIM * MLPModel.HIDDEN1_DIM
-                    + MLPModel.HIDDEN1_DIM
-                    + MLPModel.HIDDEN1_DIM * MLPModel.HIDDEN2_DIM
-                    + MLPModel.HIDDEN2_DIM
-                    + MLPModel.HIDDEN2_DIM * MLPModel.OUTPUT_DIM
-                    + MLPModel.OUTPUT_DIM];
+            total = new double[MLPModel.parameterCount()];
         }
         return total;
-    }
-
-    private static int flatten2D(double[][] src, double[] dst, int idx) {
-        for (double[] row : src) {
-            for (double value : row) {
-                dst[idx++] = value;
-            }
-        }
-        return idx;
-    }
-
-    private static int flatten1D(double[] src, double[] dst, int idx) {
-        for (double value : src) {
-            dst[idx++] = value;
-        }
-        return idx;
     }
 
     private static boolean isSocketClosed(Exception e) {
@@ -500,5 +472,61 @@ public final class Worker {
         return lower.contains("broken pipe")
                 || lower.contains("connection reset")
                 || lower.contains("socket closed");
+    }
+
+    private static int resolveMiniBatchSize() {
+        String value = System.getProperty("mlp.miniBatch");
+        if (value == null || value.isBlank()) {
+            value = System.getenv("MLP_MINI_BATCH");
+        }
+        if (value == null || value.isBlank()) {
+            return DEFAULT_MINI_BATCH_SIZE;
+        }
+        try {
+            return Math.max(1, Integer.parseInt(value.trim()));
+        } catch (NumberFormatException e) {
+            return DEFAULT_MINI_BATCH_SIZE;
+        }
+    }
+
+    private static int defaultComputeThreads(int totalWorkers) {
+        int logicalCores = Runtime.getRuntime().availableProcessors();
+        return Math.max(1, logicalCores / Math.max(1, totalWorkers));
+    }
+
+    private static void initLogging(String tag) {
+        PrintStream stderr = System.err;
+        try {
+            Path logPath = resolveLogPath();
+            if (logPath == null) {
+                return;
+            }
+            Path parent = logPath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            PrintStream fileOut = new PrintStream(new FileOutputStream(logPath.toFile(), true), true);
+            consoleOut = System.out;
+            System.setOut(fileOut);
+            fileLoggingEnabled = true;
+            System.out.printf("[Log] %s logging to %s%n", tag, logPath.toAbsolutePath());
+        } catch (IOException e) {
+            stderr.println("[Log] Failed to init file logging: " + e.getMessage());
+        }
+    }
+
+    private static Path resolveLogPath() {
+        String value = System.getProperty("mlp.logFile");
+        if (value == null || value.isBlank()) {
+            value = System.getenv("MLP_LOG_FILE");
+        }
+        if (value == null || value.isBlank()) {
+            return LOG_PATH;
+        }
+        String trimmed = value.trim();
+        if (trimmed.equalsIgnoreCase("off")) {
+            return null;
+        }
+        return Path.of(trimmed);
     }
 }
