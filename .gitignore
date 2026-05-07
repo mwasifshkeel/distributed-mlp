@@ -2,7 +2,9 @@
 /target/
 target/
 
-/data/
+/data/food-101
+
+cifar.tar.gz
 
 # Logs
 *.log
