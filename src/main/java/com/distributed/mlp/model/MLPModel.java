@@ -176,6 +176,68 @@ public class MLPModel {
         return new Gradient(dW1, db1, dW2, db2, dW3, db3, dW4, db4);
     }
 
+    public void accumulateBackward(double[] input, int label, double[] accumulator) {
+        if (input == null) throw new IllegalArgumentException("input must not be null");
+        
+        // Forward pass to get activations
+        double[] z1 = MathUtils.addBias(MathUtils.matVecMul(w1, input), b1);
+        double[] a1 = MathUtils.relu(z1);
+        double[] z2 = MathUtils.addBias(MathUtils.matVecMul(w2, a1), b2);
+        double[] a2 = MathUtils.relu(z2);
+        double[] z3 = MathUtils.addBias(MathUtils.matVecMul(w3, a2), b3);
+        double[] a3 = MathUtils.relu(z3);
+        double[] logits = MathUtils.addBias(MathUtils.matVecMul(w4, a3), b4);
+        double[] probs = MathUtils.softmax(logits);
+
+        // Output layer gradient
+        double[] dLogits = probs;
+        dLogits[label] -= 1.0;
+
+        double[] dA3 = matTVecMul(w4, dLogits);
+        double[] dZ3 = hadamard(dA3, MathUtils.reluDeriv(z3));
+        double[] dA2 = matTVecMul(w3, dZ3);
+        double[] dZ2 = hadamard(dA2, MathUtils.reluDeriv(z2));
+        double[] dA1 = matTVecMul(w2, dZ2);
+        double[] dZ1 = hadamard(dA1, MathUtils.reluDeriv(z1));
+
+        int idx = 0;
+        // W1
+        for (int i = 0; i < HIDDEN1_DIM; i++) {
+            double dZ1i = dZ1[i];
+            for (int j = 0; j < INPUT_DIM; j++) {
+                accumulator[idx++] += dZ1i * input[j];
+            }
+        }
+        for (int i = 0; i < HIDDEN1_DIM; i++) accumulator[idx++] += dZ1[i];
+        
+        // W2
+        for (int i = 0; i < HIDDEN2_DIM; i++) {
+            double dZ2i = dZ2[i];
+            for (int j = 0; j < HIDDEN1_DIM; j++) {
+                accumulator[idx++] += dZ2i * a1[j];
+            }
+        }
+        for (int i = 0; i < HIDDEN2_DIM; i++) accumulator[idx++] += dZ2[i];
+
+        // W3
+        for (int i = 0; i < HIDDEN3_DIM; i++) {
+            double dZ3i = dZ3[i];
+            for (int j = 0; j < HIDDEN2_DIM; j++) {
+                accumulator[idx++] += dZ3i * a2[j];
+            }
+        }
+        for (int i = 0; i < HIDDEN3_DIM; i++) accumulator[idx++] += dZ3[i];
+
+        // W4
+        for (int i = 0; i < OUTPUT_DIM; i++) {
+            double dLogitsi = dLogits[i];
+            for (int j = 0; j < HIDDEN3_DIM; j++) {
+                accumulator[idx++] += dLogitsi * a3[j];
+            }
+        }
+        for (int i = 0; i < OUTPUT_DIM; i++) accumulator[idx++] += dLogits[i];
+    }
+
     // Transpose multiply: w^T · v, where w is [rows][cols], result is [cols]
     private static double[] matTVecMul(double[][] matrix, double[] vector) {
         if (matrix == null || vector == null)

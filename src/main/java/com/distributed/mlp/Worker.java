@@ -415,26 +415,14 @@ public final class Worker {
             if (start >= end) break;
 
             tasks.add(() -> {
-                double[] partial = null;
+                double[] partial = new double[MLPModel.parameterCount()];
                 for (int i = start; i < end; i++) {
                     Sample sample = miniBatch.get(i);
                     if (verboseSamples) {
                         System.out.printf("[Worker %d] Batch %d: forward sample %d/%d%n",
                                 workerId, batchNumber, i + 1, miniBatch.size());
                     }
-                    model.forward(sample.pixels());
-                    if (verboseSamples) {
-                        System.out.printf("[Worker %d] Batch %d: backward sample %d/%d%n",
-                                workerId, batchNumber, i + 1, miniBatch.size());
-                    }
-                    Gradient grad = model.backward(sample.pixels(), sample.label());
-                    double[] flatGrad = flattenGradient(grad);
-                    if (partial == null) {
-                        partial = new double[flatGrad.length];
-                    }
-                    for (int g = 0; g < flatGrad.length; g++) {
-                        partial[g] += flatGrad[g];
-                    }
+                    model.accumulateBackward(sample.pixels(), sample.label(), partial);
                 }
                 return partial;
             });

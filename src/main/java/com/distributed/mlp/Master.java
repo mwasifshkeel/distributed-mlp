@@ -458,14 +458,14 @@ public final class Master {
                         workerId, payloadLen, expectedDouble, expectedFloat);
                 return;
             }
-            lastGradientPushMs = System.currentTimeMillis(); // ADD THIS
+            lastGradientPushMs = System.currentTimeMillis(); // Reset watchdog on push
             int      n        = applyGradient(gradient);
             System.out.printf("[Master] Worker %d -> gradient applied (update #%d)%n",
                     workerId, n);
 
             if (n >= targetUpdates && shutdownInitiated.compareAndSet(false, true)) {
-                System.out.printf("[Master] TARGET_UPDATES=%d reached. Broadcasting SHUTDOWN.%n", n);
-                broadcastShutdown();
+                System.out.printf("[Master] TARGET_UPDATES=%d reached. Broadcasting SHUTDOWN asynchronously.%n", n);
+                new Thread(() -> broadcastShutdown(), "master-shutdown-thread").start();
             }
         }
     }

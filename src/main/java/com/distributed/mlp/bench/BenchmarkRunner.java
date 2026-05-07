@@ -24,7 +24,7 @@
         private static final long BASE_SEED = 42L;
         private static final int MASTER_PORT = 9000;
         private static final int MASTER_TARGET_UPDATES_FALLBACK = 100;
-        private static final int MINI_BATCH_SIZE = 256;
+        private static final int MINI_BATCH_SIZE = 128;
         private static final int STARTUP_GRACE_MS = 2_000;
         private static final int DEFAULT_PULL_EVERY = 10;
 
@@ -196,8 +196,9 @@
         }
 
         private static int threadsPerWorker(int workers) {
-            int logicalCores = Runtime.getRuntime().availableProcessors();
-            return Math.max(1, logicalCores / Math.max(1, workers));
+            // int logicalCores = Runtime.getRuntime().availableProcessors();
+            // return Math.max(1, logicalCores / Math.max(1, workers));
+            return 1;
         }
 
         private static void pause(long millis) throws InterruptedException {
