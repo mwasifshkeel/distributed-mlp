@@ -40,7 +40,7 @@ public final class Worker {
     private static final long DEFAULT_SEED = 42L;
     private static final int DEFAULT_IO_THREADS = 1;
     private static final int QUEUE_CAPACITY = 256;
-    private static final int DEFAULT_MINI_BATCH_SIZE = 256;
+    private static final int DEFAULT_MINI_BATCH_SIZE = 128;
     private static final Path LOG_PATH = Path.of("logs", "model.logs");
     private static volatile PrintStream consoleOut = System.out;
     private static volatile boolean fileLoggingEnabled = false;

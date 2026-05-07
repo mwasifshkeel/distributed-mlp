@@ -1,6 +1,5 @@
 mode,workers,threads,input_size,epoch,wall_sec,loss,accuracy
-sequential,1,1,2000,1,34.916398,2.133155,0.214400
-async_sgd,2,1,2000,1,59.274000,NaN,NaN
-async_sgd,4,1,2000,1,43.177000,NaN,NaN
-async_sgd,6,1,2000,1,43.737000,NaN,NaN
-sequential,1,1,2500,1,34.392756,2.133274,0.199200
+sequential,1,1,5000,1,142.013414,1.983840,0.270900
+async_sgd,2,1,5000,1,32.377000,NaN,NaN
+async_sgd,4,1,5000,1,22.926000,NaN,NaN
+async_sgd,6,1,5000,1,23.868000,NaN,NaN
