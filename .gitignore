@@ -16,8 +16,6 @@ target/
 .DS_Store
 Thumbs.db
 
-resources/
-
 # Java build artifacts
 *.class
 GUI_PROJECT.md

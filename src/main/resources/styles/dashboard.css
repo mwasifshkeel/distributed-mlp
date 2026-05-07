@@ -1,0 +1,592 @@
+/* ════════════════════════════════════════════════════
+   Distributed MLP Dashboard — Dark Industrial Theme
+   Font stack: IBM Plex Mono (mono) + IBM Plex Sans
+   ════════════════════════════════════════════════════ */
+
+/* ── Root & Global ─────────────────────────────────── */
+.root-pane {
+    -fx-background-color: #0d0f14;
+    -fx-font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    -fx-font-size: 13px;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+.header-bar {
+    -fx-background-color: #13161e;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 0 0 1 0;
+    -fx-pref-height: 56px;
+    -fx-spacing: 10px;
+}
+
+.header-icon {
+    -fx-font-size: 26px;
+    -fx-text-fill: #4af0c8;
+    -fx-padding: 0 6 0 0;
+}
+
+.header-title {
+    -fx-font-size: 18px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #e8eaf0;
+    -fx-font-family: "IBM Plex Mono", monospace;
+}
+
+.header-subtitle {
+    -fx-font-size: 11px;
+    -fx-text-fill: #5a6080;
+    -fx-padding: 4 0 0 6;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-text-transform: uppercase;
+}
+
+.status-badge {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 11px;
+    -fx-padding: 4 10 4 10;
+    -fx-background-radius: 3;
+}
+
+.status-ready   { -fx-text-fill: #4af0c8; -fx-background-color: #0a2420; }
+.status-running { -fx-text-fill: #f0c84a; -fx-background-color: #24200a; }
+.status-error   { -fx-text-fill: #f05a4a; -fx-background-color: #240a0a; }
+
+/* ── Sidebar ─────────────────────────────────────────── */
+.sidebar {
+    -fx-background-color: #0f111a;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 0 1 0 0;
+    -fx-pref-width: 195px;
+    -fx-min-width: 195px;
+}
+
+.sidebar-section-label {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 10px;
+    -fx-text-fill: #3a4060;
+    -fx-padding: 8 0 4 8;
+    -fx-letter-spacing: 1;
+}
+
+.nav-btn {
+    -fx-background-color: transparent;
+    -fx-text-fill: #8090b0;
+    -fx-font-size: 13px;
+    -fx-alignment: CENTER_LEFT;
+    -fx-padding: 9 12 9 12;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+    -fx-border-color: transparent;
+}
+
+.nav-btn:hover {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #c8d0e8;
+}
+
+.nav-btn:pressed {
+    -fx-background-color: #131828;
+    -fx-text-fill: #4af0c8;
+}
+
+/* ── Content Area ────────────────────────────────────── */
+.content-area {
+    -fx-background-color: #0d0f14;
+}
+
+.panel-scroll {
+    -fx-background-color: transparent;
+    -fx-background: #0d0f14;
+    -fx-border-color: transparent;
+}
+
+.panel-scroll .viewport {
+    -fx-background-color: #0d0f14;
+}
+
+.panel-content {
+    -fx-background-color: #0d0f14;
+}
+
+/* ── Panel Headers ───────────────────────────────────── */
+.panel-title {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 22px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #e0e6f8;
+}
+
+.panel-subtitle {
+    -fx-font-size: 13px;
+    -fx-text-fill: #4a5570;
+}
+
+.section-label {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 12px;
+    -fx-text-fill: #5a6888;
+    -fx-font-weight: bold;
+}
+
+/* ── Config Sections (TitledPane) ────────────────────── */
+.config-section {
+    -fx-base: #0d0f14;
+}
+
+.config-section > .title {
+    -fx-background-color: #13161e;
+    -fx-text-fill: #8090b0;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 12px;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+}
+
+.config-section > .title > .arrow-button > .arrow {
+    -fx-background-color: #4a5570;
+}
+
+.config-section > .content {
+    -fx-background-color: #10131a;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+}
+
+.config-label {
+    -fx-text-fill: #7080a0;
+    -fx-font-size: 12px;
+    -fx-min-width: 130px;
+}
+
+/* ── Spinners ────────────────────────────────────────── */
+.spinner {
+    -fx-background-color: #1a1e2a;
+}
+
+.spinner .text-field {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #c8d0e8;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-border-color: #2a3050;
+}
+
+.spinner .increment-arrow-button,
+.spinner .decrement-arrow-button {
+    -fx-background-color: #1e2330;
+}
+
+.spinner .increment-arrow,
+.spinner .decrement-arrow {
+    -fx-background-color: #5a6888;
+}
+
+/* ── Buttons ─────────────────────────────────────────── */
+.btn-primary {
+    -fx-background-color: #1a4a3a;
+    -fx-text-fill: #4af0c8;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-padding: 9 20 9 20;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+    -fx-border-color: #2a6050;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.btn-primary:hover {
+    -fx-background-color: #1e5a46;
+    -fx-border-color: #4af0c8;
+}
+
+.btn-primary:disabled {
+    -fx-opacity: 0.45;
+}
+
+.btn-secondary {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #8090b0;
+    -fx-font-size: 12px;
+    -fx-padding: 7 16 7 16;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+    -fx-border-color: #2a3050;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.btn-secondary:hover {
+    -fx-background-color: #20253a;
+    -fx-text-fill: #c0d0e0;
+}
+
+.btn-danger {
+    -fx-background-color: #3a1010;
+    -fx-text-fill: #f05a4a;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 13px;
+    -fx-padding: 9 20 9 20;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+    -fx-border-color: #5a1e1e;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.btn-danger:hover {
+    -fx-background-color: #4a1414;
+    -fx-border-color: #f05a4a;
+}
+
+.btn-danger:disabled { -fx-opacity: 0.45; }
+
+.btn-outline {
+    -fx-background-color: transparent;
+    -fx-text-fill: #6080a0;
+    -fx-font-size: 12px;
+    -fx-padding: 7 14 7 14;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+    -fx-border-color: #2a3050;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.btn-outline:hover {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #a0b8d0;
+    -fx-border-color: #4af0c8;
+}
+
+.btn-outline:disabled { -fx-opacity: 0.4; }
+
+.btn-outline-small {
+    -fx-background-color: transparent;
+    -fx-text-fill: #4af0c8;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 11px;
+    -fx-padding: 4 10 4 10;
+    -fx-background-radius: 3;
+    -fx-cursor: hand;
+    -fx-border-color: #1a4a3a;
+    -fx-border-width: 1;
+    -fx-border-radius: 3;
+}
+
+.btn-outline-small:hover {
+    -fx-background-color: #0a2820;
+    -fx-border-color: #4af0c8;
+}
+
+/* ── Progress Bar ────────────────────────────────────── */
+.training-progress {
+    -fx-background-color: #1a1e2a;
+    -fx-background-radius: 3;
+    -fx-border-color: #2a3050;
+    -fx-border-radius: 3;
+    -fx-border-width: 1;
+}
+
+.training-progress .bar {
+    -fx-background-color: linear-gradient(to right, #1a4a3a, #4af0c8);
+    -fx-background-radius: 2;
+    -fx-background-insets: 1;
+}
+
+.training-progress:indeterminate .bar {
+    -fx-background-color: linear-gradient(to right, #0a2420, #4af0c8, #0a2420);
+}
+
+/* ── Status Dot ──────────────────────────────────────── */
+.status-dot {
+    -fx-font-size: 16px;
+}
+
+.dot-idle    { -fx-text-fill: #3a4060; }
+.dot-running { -fx-text-fill: #f0c84a; }
+.dot-done    { -fx-text-fill: #4af0c8; }
+.dot-error   { -fx-text-fill: #f05a4a; }
+
+.status-text {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 13px;
+    -fx-text-fill: #8090b0;
+}
+
+/* ── Info Cards ──────────────────────────────────────── */
+.info-card {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 4;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+}
+
+.card-key {
+    -fx-font-size: 10px;
+    -fx-text-fill: #4a5570;
+    -fx-font-family: "IBM Plex Mono", monospace;
+}
+
+.card-value {
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #c0d8f0;
+    -fx-font-family: "IBM Plex Mono", monospace;
+}
+
+.card-title {
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #c0d0e8;
+}
+
+.card-desc {
+    -fx-font-size: 12px;
+    -fx-text-fill: #5a6880;
+    -fx-line-spacing: 2;
+}
+
+.card-note {
+    -fx-font-size: 11px;
+    -fx-text-fill: #4af0c8;
+    -fx-font-style: italic;
+}
+
+/* ── Bench Cards ─────────────────────────────────────── */
+.bench-card {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 6;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+    -fx-padding: 16;
+}
+
+.bench-card:hover {
+    -fx-border-color: #2a3a5a;
+}
+
+.bench-desc {
+    -fx-font-size: 12px;
+    -fx-text-fill: #5a6a80;
+    -fx-line-spacing: 3;
+}
+
+/* ── Explainer Cards ─────────────────────────────────── */
+.explainer-card {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 6;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+}
+
+/* ── Arch Info ───────────────────────────────────────── */
+.arch-info {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 11px;
+    -fx-text-fill: #4af0c8;
+    -fx-background-color: #0a2420;
+    -fx-padding: 8 14 8 14;
+    -fx-background-radius: 3;
+}
+
+/* ── Log Pane ────────────────────────────────────────── */
+.log-pane {
+    -fx-base: #0d0f14;
+}
+
+.log-pane > .title {
+    -fx-background-color: #0f111a;
+    -fx-text-fill: #5a6880;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 11px;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1 0 0 0;
+}
+
+.log-area {
+    -fx-background-color: #08090e;
+    -fx-control-inner-background: #08090e;
+    -fx-text-fill: #5af0a0;
+    -fx-font-family: "IBM Plex Mono", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-border-color: transparent;
+    -fx-background-radius: 0;
+}
+
+.log-area .content {
+    -fx-background-color: #08090e;
+}
+
+/* ── Charts ──────────────────────────────────────────── */
+.themed-chart {
+    -fx-background-color: transparent;
+    -fx-plot-background-color: #0d0f14;
+    -fx-legend-background-color: #10131a;
+    -fx-chart-horizontal-grid-line-color: #1a1e2a;
+    -fx-chart-vertical-grid-line-color: #1a1e2a;
+    -fx-chart-horizontal-zero-line-color: #2a3050;
+}
+
+.themed-chart .axis {
+    -fx-tick-label-fill: #5a6880;
+    -fx-tick-mark-stroke: #2a3050;
+}
+
+.themed-chart .axis-label {
+    -fx-text-fill: #6080a0;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 11px;
+}
+
+.themed-chart .chart-title {
+    -fx-text-fill: #8090b0;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 13px;
+}
+
+.themed-chart .chart-legend-item {
+    -fx-text-fill: #6080a0;
+    -fx-font-size: 11px;
+}
+
+.chart-section {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 6;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+    -fx-padding: 16;
+}
+
+/* ── Inference ───────────────────────────────────────── */
+.results-section {
+    -fx-padding: 0 0 20 0;
+}
+
+.image-grid {
+    -fx-background-color: transparent;
+    -fx-hgap: 10;
+    -fx-vgap: 10;
+}
+
+.pred-card {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 6;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 2;
+    -fx-border-radius: 6;
+}
+
+.pred-correct { -fx-border-color: #1a4a3a; }
+.pred-wrong   { -fx-border-color: #3a1010; }
+
+.pred-label {
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #c0d0e8;
+    -fx-alignment: CENTER;
+}
+
+.true-label {
+    -fx-font-size: 10px;
+    -fx-text-fill: #5a6880;
+}
+
+.conf-label {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.conf-high { -fx-text-fill: #4af0c8; }
+.conf-low  { -fx-text-fill: #f05a4a; }
+
+.accuracy-badge {
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #4af0c8;
+    -fx-background-color: #0a2420;
+    -fx-padding: 4 12 4 12;
+    -fx-background-radius: 4;
+}
+
+/* ── Placeholders ────────────────────────────────────── */
+.placeholder-label {
+    -fx-text-fill: #3a4060;
+    -fx-font-style: italic;
+    -fx-font-size: 13px;
+    -fx-text-alignment: CENTER;
+}
+
+.placeholder-box {
+    -fx-background-color: #0c0e14;
+    -fx-background-radius: 6;
+    -fx-border-color: #1a1e2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+    -fx-border-style: dashed;
+}
+
+/* ── ScrollBar ───────────────────────────────────────── */
+.scroll-bar {
+    -fx-background-color: #0d0f14;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: #1e2330;
+    -fx-background-radius: 3;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: #2a3050;
+}
+
+.scroll-bar .track {
+    -fx-background-color: #0d0f14;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: #0d0f14;
+}
+
+/* ── TextField ───────────────────────────────────────── */
+.text-field {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #c0d0e8;
+    -fx-font-family: "IBM Plex Mono", monospace;
+    -fx-border-color: #2a3050;
+    -fx-border-width: 1;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+    -fx-padding: 6 10 6 10;
+}
+
+.text-field:focused {
+    -fx-border-color: #4af0c8;
+    -fx-background-color: #13181f;
+}
+
+/* ── Tooltip ─────────────────────────────────────────── */
+.tooltip {
+    -fx-background-color: #1a1e2a;
+    -fx-text-fill: #8090b0;
+    -fx-font-size: 12px;
+    -fx-border-color: #2a3050;
+    -fx-border-width: 1;
+}
+
+/* ── Status Section ──────────────────────────────────── */
+.status-section {
+    -fx-background-color: #10131a;
+    -fx-background-radius: 6;
+    -fx-border-color: #1e2330;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+    -fx-padding: 16;
+}
