@@ -17,7 +17,7 @@ import java.util.Locale;
 public final class OptimizationBenchmark {
     private static final int DEFAULT_PORT = 9000;
     private static final int DEFAULT_WORKERS = 3;
-    private static final int DEFAULT_EPOCHS = 5;
+    private static final int DEFAULT_EPOCHS = 1;
     private static final int DEFAULT_PULL_EVERY = 10;
     private static final long BASE_SEED = 42L;
 

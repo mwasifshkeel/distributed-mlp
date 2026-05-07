@@ -18,8 +18,8 @@
      * writes a normalized CSV table for later scaling/speedup analysis.
      */
     public final class BenchmarkRunner {
-        private static final int[] WORKER_CONFIGS = {1, 2, 4, 6};
-        private static final int[] INPUT_SIZES = {5_000, 10_000};
+        private static final int[] WORKER_CONFIGS = {1, 2, 4, 8};
+        private static final int[] INPUT_SIZES = {10_000, 30_000, 50_000};
         private static final int EPOCHS = 1;
         private static final long BASE_SEED = 42L;
         private static final int MASTER_PORT = 9000;

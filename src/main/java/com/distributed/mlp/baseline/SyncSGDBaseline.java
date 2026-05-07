@@ -27,7 +27,7 @@ import com.distributed.mlp.protocol.WeightSerializer;
  */
 public final class SyncSGDBaseline {
     private static final int DEFAULT_WORKERS = 3;
-    private static final int DEFAULT_EPOCHS = 5;
+    private static final int DEFAULT_EPOCHS = 3;
     private static final long DEFAULT_SEED = 42L;
     private static final double LEARNING_RATE = 1e-3;
     private static final Path OUTPUT_CSV = Path.of("results", "sync_results.csv");

@@ -19,8 +19,8 @@ import com.distributed.mlp.baseline.SequentialBaseline;
  * analysis-ready CSV outputs.
  */
 public final class ScalingExperiment {
-    private static final int[] WORKER_CONFIGS = {1, 2, 3, 4, 8};
-    private static final int EPOCHS = 5;
+    private static final int[] WORKER_CONFIGS = {1, 2, 4, 8};
+    private static final int EPOCHS = 3;
     private static final int STRONG_INPUT_SIZE = 12_000;
     private static final int WEAK_WORK_PER_WORKER = 3_000;
     private static final int BENCH_COMPUTE_THREADS = 2;

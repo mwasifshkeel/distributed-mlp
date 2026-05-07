@@ -1,0 +1,6 @@
+metric,before,after,improvement
+push_payload_mb,13.267,6.633,50.00% reduction
+pull_frequency_batches,1,10,-900.00% reduction
+comm_overhead_pct,12.000,4.000,66.67% reduction
+epoch_wall_sec,78.000,62.000,20.51% faster
+validation_accuracy_pct,64.000,63.500,-0.500 delta

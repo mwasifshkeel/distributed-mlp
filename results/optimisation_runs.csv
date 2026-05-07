@@ -1,0 +1,3 @@
+mode,workers,steps_per_worker,pull_every,compress,wall_sec
+baseline,3,520,1,false,386.986000
+optimized,3,520,10,true,363.173000

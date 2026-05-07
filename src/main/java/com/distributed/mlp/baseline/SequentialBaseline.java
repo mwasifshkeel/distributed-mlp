@@ -25,7 +25,7 @@ import com.distributed.mlp.protocol.WeightSerializer;
  * After training, the model is saved to {@code results/sequential_model.bin}.
  */
 public final class SequentialBaseline {
-    private static final int DEFAULT_EPOCHS = 5;
+    private static final int DEFAULT_EPOCHS = 3;
     private static final long DEFAULT_SEED = 42L;
     private static final double LEARNING_RATE = 1e-3;
     private static final long EPOCH_PAUSE_MS = 150L;

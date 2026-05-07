@@ -169,16 +169,17 @@ public final class BenchPlotter {
         List<Double> f09 = new ArrayList<>();
         List<Double> f099 = new ArrayList<>();
 
+
+        List<Double> estimatedRaw = columnAsDouble(rows, 2);  // amdahl_estimated column
+
+        List<Double> estimated = new ArrayList<>();
+
         for (int i = 0; i < workersRaw.size(); i++) {
             double w = workersRaw.get(i);
-            if (w <= 0 || w > 8) {
-                continue;
-            }
+            if (w <= 0 || w > 8) continue;
             workers.add(w);
             measured.add(getOrNaN(measuredRaw, i));
-            f05.add(getOrNaN(f05Raw, i));
-            f09.add(getOrNaN(f09Raw, i));
-            f099.add(getOrNaN(f099Raw, i));
+            estimated.add(getOrNaN(estimatedRaw, i));
         }
 
         lineChart(
@@ -186,11 +187,11 @@ public final class BenchPlotter {
                 "workers",
                 "speedup",
                 workers,
-                List.of(measured, f05, f09, f099),
-                List.of("measured", "expected (f=0.5)", "expected (f=0.9)", "expected (f=0.99)"),
-            PLOTS_DIR.resolve("amdahl_speedup.png"),
-            true);
-    }
+                List.of(measured, estimated),
+                List.of("measured", "expected (Amdahl)"),
+                PLOTS_DIR.resolve("amdahl_speedup.png"),
+                true);
+            }
 
     private static void plotGustafson() throws IOException {
         if (!Files.exists(AMDAHL_CSV)) {
