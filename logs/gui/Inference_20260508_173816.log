@@ -1,0 +1,15 @@
+Loading weights from /media/mwasifshakeel/Wasif/NUST/Semester 6 - University Courses/Parallel & Distributed Computing/Project/distributed-mlp/results/sequential_model.bin
+Model loaded. TOTAL_PARAMS=1738890
+Loading test data...
+Sample   0 | true=frog         predicted=frog         probs[true]=0.1879
+Sample   1 | true=frog         predicted=truck        probs[true]=0.0501
+Sample   2 | true=truck        predicted=horse        probs[true]=0.1810
+Sample   3 | true=automobile   predicted=ship         probs[true]=0.0947
+Sample   4 | true=horse        predicted=airplane     probs[true]=0.0660
+Sample   5 | true=frog         predicted=airplane     probs[true]=0.0430
+Sample   6 | true=truck        predicted=frog         probs[true]=0.0186
+Sample   7 | true=truck        predicted=truck        probs[true]=0.4421
+Sample   8 | true=horse        predicted=bird         probs[true]=0.0941
+Sample   9 | true=cat          predicted=cat          probs[true]=0.2151
+
+Accuracy on 500 samples: 138/500 = 27.60%

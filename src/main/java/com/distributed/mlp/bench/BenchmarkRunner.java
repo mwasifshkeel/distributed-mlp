@@ -80,7 +80,7 @@
 
         private static List<EpochResult> runSequential(int inputSize, int epochs) throws IOException {
             long seed = BASE_SEED + inputSize;
-            SequentialBaseline.run(epochs, seed);
+            SequentialBaseline.run(epochs, seed, inputSize);
 
             List<String> lines = Files.readAllLines(SEQ_CSV, StandardCharsets.UTF_8);
             List<EpochResult> out = new ArrayList<>();
@@ -223,7 +223,7 @@
         }
 
         private static void initRawCsv() throws IOException {
-            String header = "mode,workers,threads,input_size,epoch,wall_sec,loss,accuracy" + System.lineSeparator();
+            String header = "mode,workers,threads,input_size,epoch,wall_sec" + System.lineSeparator();
             Files.writeString(
                     RAW_CSV,
                     header,
@@ -239,15 +239,13 @@
             for (EpochResult row : rows) {
                 sb.append(String.format(
                         Locale.ROOT,
-                        "%s,%d,%d,%d,%d,%.6f,%s,%s%n",
+                        "%s,%d,%d,%d,%d,%.6f%n",
                         mode,
                         workers,
                         threads,
                         inputSize,
                         row.epoch(),
-                        row.wallSec(),
-                        formatMaybeNan(row.loss()),
-                        formatMaybeNan(row.accuracy())));
+                        row.wallSec()));
             }
 
             Files.writeString(
@@ -255,13 +253,6 @@
                     sb.toString(),
                     StandardCharsets.UTF_8,
                     StandardOpenOption.APPEND);
-        }
-
-        private static String formatMaybeNan(double value) {
-            if (Double.isNaN(value)) {
-                return "NaN";
-            }
-            return String.format(Locale.ROOT, "%.6f", value);
         }
 
         private static void destroyAll(List<Process> processes) {

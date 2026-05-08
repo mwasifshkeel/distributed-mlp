@@ -27,7 +27,7 @@ import com.distributed.mlp.protocol.WeightSerializer;
  */
 public final class SyncSGDBaseline {
     private static final int DEFAULT_WORKERS = 3;
-    private static final int DEFAULT_EPOCHS = 3;
+    private static final int DEFAULT_EPOCHS = 2;
     private static final long DEFAULT_SEED = 42L;
     private static final double LEARNING_RATE = 1e-3;
     private static final Path OUTPUT_CSV = Path.of("results", "sync_results.csv");
@@ -40,16 +40,17 @@ public final class SyncSGDBaseline {
         int workers = args.length >= 1 ? Integer.parseInt(args[0]) : DEFAULT_WORKERS;
         int epochs = args.length >= 2 ? Integer.parseInt(args[1]) : DEFAULT_EPOCHS;
         long seed = args.length >= 3 ? Long.parseLong(args[2]) : DEFAULT_SEED;
+        int inputSize = args.length >= 4 ? Integer.parseInt(args[3]) : -1;
 
         try {
-            run(workers, epochs, seed);
+            run(workers, epochs, seed, inputSize);
         } catch (IOException | InterruptedException | BrokenBarrierException | RuntimeException e) {
             System.err.println("SyncSGDBaseline failed: " + e.getMessage());
             e.printStackTrace(System.err);
         }
     }
 
-    public static void run(int workers, int epochs, long seed)
+    public static void run(int workers, int epochs, long seed, int inputSize)
             throws IOException, InterruptedException, BrokenBarrierException {
         if (workers <= 0) {
             throw new IllegalArgumentException("workers must be > 0");
@@ -64,7 +65,12 @@ public final class SyncSGDBaseline {
         if (dataset.isEmpty()) {
             throw new IOException("Dataset is empty. Check data/cifar-10-batches-bin/ path.");
         }
-        System.out.printf("[SyncSGDBaseline] Loaded %,d samples%n", dataset.size());
+
+        if (inputSize > 0 && inputSize < dataset.size()) {
+            Collections.shuffle(dataset, new Random(seed));
+            dataset = dataset.subList(0, inputSize);
+        }
+        System.out.printf("[SyncSGDBaseline] Using %,d samples%n", dataset.size());
 
         MLPModel sharedModel = new MLPModel();
         sharedModel.initXavier(seed);

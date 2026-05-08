@@ -26,16 +26,17 @@ import javax.imageio.ImageIO;
  */
 public final class ThreadScalingBenchmark {
     private static final int[] DEFAULT_THREAD_CONFIGS = {1, 2, 4, 8};
+    private static final int[] DEFAULT_INPUT_SIZES = {10_000};
     private static final int DEFAULT_WORKERS = 3;
     private static final int DEFAULT_EPOCHS = 2;
-    private static final int DEFAULT_INPUT_SIZE = 75_750;
     private static final int MASTER_PORT = 9000;
     private static final int MASTER_TARGET_UPDATES_FALLBACK = 100;
-    private static final int MINI_BATCH_SIZE = 32;
+    private static final int MINI_BATCH_SIZE = 128;
     private static final long BASE_SEED = 42L;
-    private static final int MIN_STEPS_PER_WORKER = 500;
-    private static final int STARTUP_GRACE_MS = 2_000;
+    private static final int MIN_STEPS_PER_WORKER = 10;
+    private static final int STARTUP_GRACE_MS = 200;
     private static final int DEFAULT_PULL_EVERY = 10;
+    private static final String MAX_SAMPLES_PROP = "mlp.maxSamples";
 
     private static final int WIDTH = 1200;
     private static final int HEIGHT = 700;
@@ -56,9 +57,9 @@ public final class ThreadScalingBenchmark {
             ensureRawHeader();
 
             List<ResultRow> rows = runThreadScaling(cfg);
-            appendRawCsv(rows, cfg.inputSize, cfg.workers);
-            writeThreadCsv(rows, cfg.inputSize, cfg.workers);
-            plotThreadScaling(rows, cfg.inputSize, cfg.workers);
+            appendRawCsv(rows);
+            writeThreadCsv(rows, cfg);
+            plotThreadScaling(rows, cfg);
 
             System.out.println("Thread scaling benchmark complete.");
             System.out.println("  Appended to: " + RAW_CSV.toAbsolutePath());
@@ -73,18 +74,25 @@ public final class ThreadScalingBenchmark {
 
     private static List<ResultRow> runThreadScaling(Config cfg) throws IOException, InterruptedException {
         List<ResultRow> rows = new ArrayList<>();
-        for (int threads : cfg.threadConfigs) {
-            System.out.printf(
-                    Locale.ROOT,
-                    "[ThreadScaling] workers=%d threads=%d input=%d epochs=%d%n",
-                    cfg.workers,
-                    threads,
-                    cfg.inputSize,
-                    cfg.epochs);
+        
+        for (int inputSize : cfg.inputSizes) {
+            int effectiveInputSize = effectiveSampleCount(inputSize);
+            System.out.printf("[ThreadScaling] Running with input_size=%d (effective=%d)%n", 
+                inputSize, effectiveInputSize);
+            
+            for (int threads : cfg.threadConfigs) {
+                System.out.printf(
+                        Locale.ROOT,
+                        "[ThreadScaling] workers=%d threads=%d input=%d epochs=%d%n",
+                        cfg.workers,
+                        threads,
+                        effectiveInputSize,
+                        cfg.epochs);
 
-            List<EpochResult> epochs = runAsyncSgd(cfg.workers, cfg.inputSize, cfg.epochs, threads);
-            for (EpochResult epoch : epochs) {
-                rows.add(new ResultRow(threads, epoch.epoch(), epoch.wallSec()));
+                List<EpochResult> epochs = runAsyncSgd(cfg.workers, effectiveInputSize, cfg.epochs, threads);
+                for (EpochResult epoch : epochs) {
+                    rows.add(new ResultRow(threads, effectiveInputSize, epoch.epoch(), epoch.wallSec()));
+                }
             }
         }
         return rows;
@@ -105,19 +113,10 @@ public final class ThreadScalingBenchmark {
                     String.valueOf(steps),
                     String.valueOf(BASE_SEED + inputSize + epoch),
                     "false"),
-                    List.of(
-                        "-Dmlp.compressGradients=true",
-                        "-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY));
-
-            Thread.sleep(1500L);
+                    javaProps(computeThreads, inputSize));
 
             List<Process> workerProcesses = new ArrayList<>();
             for (int workerId = 0; workerId < workers; workerId++) {
-                List<String> jvmArgs = List.of(
-                    "-Dmlp.compressGradients=true",
-                    "-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY,
-                        "-Dmlp.computeThreads=" + computeThreads,
-                        "-Dmlp.ioThreads=1");
                 Process worker = startJavaProcess(List.of(
                         "com.distributed.mlp.Worker",
                         "127.0.0.1",
@@ -126,11 +125,10 @@ public final class ThreadScalingBenchmark {
                         String.valueOf(workers),
                         String.valueOf(steps),
                         String.valueOf(BASE_SEED + inputSize + epoch + workerId)),
-                        jvmArgs);
+                        javaProps(computeThreads, inputSize));
                 workerProcesses.add(worker);
             }
 
-            Thread.sleep(STARTUP_GRACE_MS);
             Instant t0 = Instant.now();
             int masterExit = master.waitFor();
             double wallSec = Duration.between(t0, Instant.now()).toMillis() / 1000.0;
@@ -148,8 +146,9 @@ public final class ThreadScalingBenchmark {
             rows.add(new EpochResult(epoch, wallSec));
             System.out.printf(
                     Locale.ROOT,
-                    "[ThreadScaling] threads=%d epoch=%d wall_sec=%.3f%n",
+                    "[ThreadScaling] threads=%d input=%d epoch=%d wall_sec=%.3f%n",
                     computeThreads,
+                    inputSize,
                     epoch,
                     wallSec);
         }
@@ -169,6 +168,19 @@ public final class ThreadScalingBenchmark {
         pb.redirectErrorStream(true);
         pb.inheritIO();
         return pb.start();
+    }
+
+    private static List<String> javaProps(int computeThreads, int inputSize) {
+        List<String> props = new ArrayList<>();
+        props.add("-Dmlp.compressGradients=true");
+        props.add("-Dmlp.pullEvery=" + DEFAULT_PULL_EVERY);
+        props.add("-Dmlp.computeThreads=" + computeThreads);
+        props.add("-Dmlp.ioThreads=1");
+        int maxSamples = resolveMaxSamples();
+        if (maxSamples > 0) {
+            props.add("-D" + MAX_SAMPLES_PROP + "=" + Math.min(inputSize, maxSamples));
+        }
+        return props;
     }
 
     private static String getJavaExecutable() {
@@ -192,7 +204,7 @@ public final class ThreadScalingBenchmark {
         if (Files.exists(RAW_CSV)) {
             return;
         }
-        String header = "mode,workers,threads,input_size,epoch,wall_sec,loss,accuracy" + System.lineSeparator();
+        String header = "mode,workers,threads,input_size,epoch,wall_sec" + System.lineSeparator();
         Files.writeString(
                 RAW_CSV,
                 header,
@@ -201,16 +213,16 @@ public final class ThreadScalingBenchmark {
                 StandardOpenOption.WRITE);
     }
 
-    private static void appendRawCsv(List<ResultRow> rows, int inputSize, int workers) throws IOException {
+    private static void appendRawCsv(List<ResultRow> rows) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (ResultRow row : rows) {
             sb.append(String.format(
                     Locale.ROOT,
-                    "%s,%d,%d,%d,%d,%.6f,NaN,NaN%n",
+                    "%s,%d,%d,%d,%d,%.6f%n",
                     "async_sgd_thread_scaling",
-                    workers,
+                    DEFAULT_WORKERS,
                     row.threads(),
-                    inputSize,
+                    row.inputSize(),
                     row.epoch(),
                     row.wallSec()));
         }
@@ -223,69 +235,93 @@ public final class ThreadScalingBenchmark {
                 StandardOpenOption.CREATE);
     }
 
-    private static void writeThreadCsv(List<ResultRow> rows, int inputSize, int workers) throws IOException {
-        List<Integer> threads = rows.stream()
-                .map(ResultRow::threads)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+    private static void writeThreadCsv(List<ResultRow> rows, Config cfg) throws IOException {
+        for (int inputSize : cfg.inputSizes) {
+            int effectiveInputSize = effectiveSampleCount(inputSize);
+            List<ResultRow> sizeRows = rows.stream()
+                    .filter(r -> r.inputSize() == effectiveInputSize)
+                    .collect(Collectors.toList());
+            
+            if (sizeRows.isEmpty()) continue;
+            
+            List<Integer> threads = sizeRows.stream()
+                    .map(ResultRow::threads)
+                    .distinct()
+                    .sorted()
+                    .collect(Collectors.toList());
 
-        double tBaseline = meanWall(rows, threads.get(0));
-        StringBuilder sb = new StringBuilder();
-        sb.append("workers,threads,input_size,mean_wall_sec,speedup,efficiency")
-                .append(System.lineSeparator());
+            double tBaseline = meanWall(sizeRows, threads.get(0));
+            StringBuilder sb = new StringBuilder();
+            
+            // Append header only for first input size or create new file
+            boolean fileExists = Files.exists(THREAD_CSV);
+            if (!fileExists) {
+                sb.append("workers,threads,input_size,mean_wall_sec,speedup,efficiency")
+                        .append(System.lineSeparator());
+            }
 
-        for (int t : threads) {
-            double tPar = meanWall(rows, t);
-            double speedup = tBaseline / tPar;
-            double efficiency = speedup / t;
-            sb.append(String.format(
-                    Locale.ROOT,
-                    "%d,%d,%d,%.6f,%.6f,%.6f%n",
-                    workers,
-                    t,
-                    inputSize,
-                    tPar,
-                    speedup,
-                    efficiency));
+            for (int t : threads) {
+                double tPar = meanWall(sizeRows, t);
+                double speedup = tBaseline / tPar;
+                double efficiency = speedup / t;
+                sb.append(String.format(
+                        Locale.ROOT,
+                        "%d,%d,%d,%.6f,%.6f,%.6f%n",
+                        cfg.workers,
+                        t,
+                        effectiveInputSize,
+                        tPar,
+                        speedup,
+                        efficiency));
+            }
+
+            Files.writeString(
+                    THREAD_CSV,
+                    sb.toString(),
+                    StandardCharsets.UTF_8,
+                    fileExists ? StandardOpenOption.APPEND : StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE);
         }
-
-        Files.writeString(
-                THREAD_CSV,
-                sb.toString(),
-                StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
     }
 
-    private static void plotThreadScaling(List<ResultRow> rows, int inputSize, int workers) throws IOException {
-        List<Integer> threads = rows.stream()
-                .map(ResultRow::threads)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+    private static void plotThreadScaling(List<ResultRow> rows, Config cfg) throws IOException {
+        for (int inputSize : cfg.inputSizes) {
+            int effectiveInputSize = effectiveSampleCount(inputSize);
+            List<ResultRow> sizeRows = rows.stream()
+                    .filter(r -> r.inputSize() == effectiveInputSize)
+                    .collect(Collectors.toList());
+            
+            if (sizeRows.isEmpty()) continue;
+            
+            List<Integer> threads = sizeRows.stream()
+                    .map(ResultRow::threads)
+                    .distinct()
+                    .sorted()
+                    .collect(Collectors.toList());
 
-        double tBaseline = meanWall(rows, threads.get(0));
-        List<Double> x = threads.stream().map(Integer::doubleValue).collect(Collectors.toList());
-        List<Double> wall = threads.stream().map(t -> meanWall(rows, t)).collect(Collectors.toList());
-        List<Double> speedup = threads.stream().map(t -> tBaseline / meanWall(rows, t)).collect(Collectors.toList());
+            double tBaseline = meanWall(sizeRows, threads.get(0));
+            List<Double> x = threads.stream().map(Integer::doubleValue).collect(Collectors.toList());
+            List<Double> wall = threads.stream().map(t -> meanWall(sizeRows, t)).collect(Collectors.toList());
+            List<Double> speedup = threads.stream().map(t -> tBaseline / meanWall(sizeRows, t)).collect(Collectors.toList());
 
-        lineChart(
-                "Thread Scaling Wall Time (workers=" + workers + ")",
-                "compute_threads",
-                "wall_sec",
-                x,
-                wall,
-                PLOTS_DIR.resolve("thread_scaling_wall_sec.png"));
+            String suffix = "_input" + effectiveInputSize;
+            
+            lineChart(
+                    "Thread Scaling Wall Time (workers=" + cfg.workers + ", input=" + effectiveInputSize + ")",
+                    "compute_threads",
+                    "wall_sec",
+                    x,
+                    wall,
+                    PLOTS_DIR.resolve("thread_scaling_wall_sec" + suffix + ".png"));
 
-        lineChart(
-                "Thread Scaling Speedup (workers=" + workers + ")",
-                "compute_threads",
-                "speedup",
-                x,
-                speedup,
-                PLOTS_DIR.resolve("thread_scaling_speedup.png"));
+            lineChart(
+                    "Thread Scaling Speedup (workers=" + cfg.workers + ", input=" + effectiveInputSize + ")",
+                    "compute_threads",
+                    "speedup",
+                    x,
+                    speedup,
+                    PLOTS_DIR.resolve("thread_scaling_speedup" + suffix + ".png"));
+        }
     }
 
     private static double meanWall(List<ResultRow> rows, int threads) {
@@ -294,6 +330,29 @@ public final class ThreadScalingBenchmark {
                 .mapToDouble(ResultRow::wallSec)
                 .average()
                 .orElse(Double.NaN);
+    }
+
+    private static int resolveMaxSamples() {
+        String value = System.getProperty(MAX_SAMPLES_PROP);
+        if (value == null || value.isBlank()) {
+            value = System.getenv("MLP_MAX_SAMPLES");
+        }
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static int effectiveSampleCount(int requested) {
+        int maxSamples = resolveMaxSamples();
+        if (maxSamples <= 0) {
+            return requested;
+        }
+        return Math.min(requested, maxSamples);
     }
 
     private static void lineChart(String title, String xLabel, String yLabel,
@@ -434,21 +493,21 @@ public final class ThreadScalingBenchmark {
     private record EpochResult(int epoch, double wallSec) {
     }
 
-    private record ResultRow(int threads, int epoch, double wallSec) {
+    private record ResultRow(int threads, int inputSize, int epoch, double wallSec) {
     }
 
-    private record Config(int workers, int inputSize, int epochs, List<Integer> threadConfigs) {
+    private record Config(int workers, List<Integer> inputSizes, int epochs, List<Integer> threadConfigs) {
         private static Config fromArgs(String[] args) {
             int workers = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_WORKERS;
-            int inputSize = args.length > 1 ? Integer.parseInt(args[1]) : DEFAULT_INPUT_SIZE;
+            List<Integer> inputSizes = args.length > 1 ? parseIntegers(args[1]) : toList(DEFAULT_INPUT_SIZES);
             int epochs = args.length > 2 ? Integer.parseInt(args[2]) : DEFAULT_EPOCHS;
             List<Integer> threadConfigs = args.length > 3
-                    ? parseThreads(args[3])
+                    ? parseIntegers(args[3])
                     : toList(DEFAULT_THREAD_CONFIGS);
-            return new Config(workers, inputSize, epochs, threadConfigs);
+            return new Config(workers, inputSizes, epochs, threadConfigs);
         }
 
-        private static List<Integer> parseThreads(String csv) {
+        private static List<Integer> parseIntegers(String csv) {
             return List.of(csv.split(",")).stream()
                     .map(String::trim)
                     .filter(s -> !s.isEmpty())

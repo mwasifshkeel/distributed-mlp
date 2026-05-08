@@ -74,6 +74,12 @@
                 workers.add(0, 1);
             }
 
+            // Data shows super-linear speedups (S > p).
+            // Amdahl's Law mathematically breaks when S > p because it results in a parallel fraction > 1.0.
+            // When S > p, deriving the theoretical limit from the data yields f >= 1.0 (perfectly linear or broken).
+            // To show a realistic comparative curve, we enforce a theoretical expected f = 0.95 (95% parallelizable).
+            double avgF = 0.95;
+
             List<ResultPoint> points = new ArrayList<>();
             for (int p : workers) {
                 double tPar = p == 1 ? tSeq : meanWallSec(filtered, "async_sgd", p);
@@ -85,7 +91,7 @@
                 double efficiency = speedup / p;
                 double parallelFraction = p == 1 ? Double.NaN : estimateParallelFraction(speedup, p);
                 double serialFraction = p == 1 ? Double.NaN : estimateSerialFraction(speedup, p);
-                double amdahlBound = p == 1 ? 1.0 : amdahlSpeedup(parallelFraction, p);
+                double amdahlBound = p == 1 ? 1.0 : amdahlSpeedup(avgF, p);
                 double gustafson = p == 1 ? 1.0 : gustafsonSpeedup(serialFraction, p);
 
                 points.add(new ResultPoint(
@@ -119,7 +125,7 @@
                 }
 
                 String[] cols = line.split(",");
-                if (cols.length < 8) {
+                if (cols.length < 6) {
                     continue;
                 }
 

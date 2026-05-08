@@ -22,7 +22,7 @@ public final class OptimizationBenchmark {
     private static final long BASE_SEED = 42L;
 
     private static final int TOTAL_SAMPLES = 50_000;
-    private static final int MINI_BATCH = 32;
+    private static final int MINI_BATCH = 128;
 
     private static final Path RESULTS_DIR = Path.of("results");
     private static final Path OPT_CSV = RESULTS_DIR.resolve("optimisation_runs.csv");

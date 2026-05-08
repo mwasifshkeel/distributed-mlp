@@ -24,13 +24,13 @@ public final class ScalingExperiment {
     private static final int STRONG_INPUT_SIZE = 12_000;
     private static final int WEAK_WORK_PER_WORKER = 3_000;
     private static final int BENCH_COMPUTE_THREADS = 2;
-    private static final int STARTUP_GRACE_MS = 2_000;
+    private static final int STARTUP_GRACE_MS = 200;
     private static final int DEFAULT_PULL_EVERY = 10;
     private static final boolean BENCH_COMPRESS = true;
 
     private static final int MASTER_PORT = 9000;
     private static final int MASTER_TARGET_UPDATES_FALLBACK = 100;
-    private static final int MINI_BATCH_SIZE = 32;
+    private static final int MINI_BATCH_SIZE = 128;
     private static final long BASE_SEED = 42L;
 
     private static final Path RESULTS_DIR = Path.of("results");
@@ -113,7 +113,7 @@ public final class ScalingExperiment {
         List<RawEpoch> out = new ArrayList<>();
         for (int epoch = 1; epoch <= EPOCHS; epoch++) {
             long seed = BASE_SEED + inputSize + epoch;
-            SequentialBaseline.run(1, seed);
+            SequentialBaseline.run(1, seed, inputSize);
 
             List<String> lines = Files.readAllLines(SEQ_CSV, StandardCharsets.UTF_8);
             if (lines.size() < 2) {

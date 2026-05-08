@@ -32,6 +32,8 @@ public final class BenchPlotter {
     private static final Path SERIAL_CSV = RESULTS_DIR.resolve("serial_bench.csv");
     private static final Path OPT_CSV = RESULTS_DIR.resolve("optimisation_runs.csv");
     private static final Path THREAD_CSV = RESULTS_DIR.resolve("thread_scaling.csv");
+    private static final Path SYNC_CSV = RESULTS_DIR.resolve("sync_results.csv");
+    private static final Path RAW_CSV = RESULTS_DIR.resolve("raw.csv");
 
     private static final int WIDTH = 1200;
     private static final int HEIGHT = 700;
@@ -42,13 +44,13 @@ public final class BenchPlotter {
     public static void main(String[] args) {
         try {
             Files.createDirectories(PLOTS_DIR);
-            plotSequential();
             plotScaling();
             plotAmdahl();
             plotGustafson();
             plotSerialBench();
             plotOptimization();
             plotThreadScaling();
+            plotImplementationComparison();
             System.out.println("Plots saved under: " + PLOTS_DIR.toAbsolutePath());
         } catch (IOException | RuntimeException e) {
             System.err.println("BenchPlotter failed: " + e.getMessage());
@@ -57,44 +59,7 @@ public final class BenchPlotter {
         }
     }
 
-    private static void plotSequential() throws IOException {
-        if (!Files.exists(SEQ_CSV)) {
-            System.err.println("[BenchPlotter] Missing sequential_results.csv, skipping.");
-            return;
-        }
-        List<String[]> rows = readCsv(SEQ_CSV);
-        List<Double> epochs = columnAsDouble(rows, 0);
-        List<Double> loss = columnAsDouble(rows, 1);
-        List<Double> acc = columnAsDouble(rows, 2);
-        List<Double> wall = columnAsDouble(rows, 3);
 
-        lineChart(
-                "Sequential Loss by Epoch",
-                "epoch",
-                "loss",
-                epochs,
-                List.of(loss),
-                List.of("loss"),
-                PLOTS_DIR.resolve("sequential_loss.png"));
-
-        lineChart(
-                "Sequential Accuracy by Epoch",
-                "epoch",
-                "accuracy",
-                epochs,
-                List.of(acc),
-                List.of("accuracy"),
-                PLOTS_DIR.resolve("sequential_accuracy.png"));
-
-        lineChart(
-                "Sequential Wall Time by Epoch",
-                "epoch",
-                "wall_sec",
-                epochs,
-                List.of(wall),
-                List.of("wall_sec"),
-                PLOTS_DIR.resolve("sequential_wall_sec.png"));
-    }
 
     private static void plotScaling() throws IOException {
         if (Files.exists(STRONG_CSV)) {
@@ -303,6 +268,66 @@ public final class BenchPlotter {
             List.of("efficiency"),
             PLOTS_DIR.resolve("thread_scaling_efficiency.png"));
         }
+
+    private static void plotImplementationComparison() throws IOException {
+        List<String> labels = new ArrayList<>();
+        List<Double> values = new ArrayList<>();
+
+        // 1. Sequential (from sequential_results.csv)
+        if (Files.exists(SEQ_CSV)) {
+            List<String[]> seqRows = readCsv(SEQ_CSV);
+            if (!seqRows.isEmpty()) {
+                double seqWall = parseDouble(seqRows.get(0)[3]); // epoch,loss,accuracy,wall_sec
+                labels.add("Sequential");
+                values.add(seqWall);
+            }
+        }
+
+        // 2. Sync SGD (from sync_results.csv)
+        if (Files.exists(SYNC_CSV)) {
+            List<String[]> syncRows = readCsv(SYNC_CSV);
+            if (!syncRows.isEmpty()) {
+                double syncWall = parseDouble(syncRows.get(0)[3]);
+                labels.add("SyncSGD");
+                values.add(syncWall);
+            }
+        }
+
+        // 3. Parallel Tracking (from thread_scaling.csv)
+        if (Files.exists(THREAD_CSV)) {
+            List<String[]> tRows = readCsv(THREAD_CSV);
+            double minWall = tRows.stream()
+                .mapToDouble(r -> parseDouble(r[3]))
+                .min().orElse(Double.NaN);
+            if (!Double.isNaN(minWall)) {
+                labels.add("Parallel");
+                values.add(minWall);
+            }
+        }
+
+        // 4. Distributed (from raw.csv, mode=async_sgd, 50000 input_size if available, best time)
+        if (Files.exists(RAW_CSV)) {
+            List<String[]> rawRows = readCsv(RAW_CSV);
+            double minDistWall = rawRows.stream()
+                .filter(r -> "async_sgd".equalsIgnoreCase(r[0].trim()))
+                .mapToDouble(r -> parseDouble(r[5]))
+                .min().orElse(Double.NaN);
+            if (!Double.isNaN(minDistWall)) {
+                labels.add("Distributed");
+                values.add(minDistWall);
+            }
+        }
+
+        if (!labels.isEmpty()) {
+            barChart(
+                    "Best Wall Time by Implementation",
+                    "Implementation",
+                    "wall_sec",
+                    labels,
+                    values,
+                    PLOTS_DIR.resolve("impl_comparison.png"));
+        }
+    }
 
     private static List<String[]> readCsv(Path csv) throws IOException {
         List<String> lines = Files.readAllLines(csv, StandardCharsets.UTF_8);

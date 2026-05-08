@@ -6,8 +6,6 @@ target/
 
 cifar.tar.gz
 
-# Logs
-*.log
 
 # IDE
 .idea/
@@ -31,6 +29,7 @@ GUI_PROJECT.md
 PROJECT_REPORT.md
 
 results2/
+results3/
 
 PROJECT.md
 

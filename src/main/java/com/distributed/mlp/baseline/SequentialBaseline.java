@@ -28,7 +28,6 @@ public final class SequentialBaseline {
     private static final int DEFAULT_EPOCHS = 3;
     private static final long DEFAULT_SEED = 42L;
     private static final double LEARNING_RATE = 1e-3;
-    private static final long EPOCH_PAUSE_MS = 150L;
     private static final Path OUTPUT_CSV = Path.of("results", "sequential_results.csv");
     private static final Path MODEL_PATH = Path.of("results", "sequential_model.bin");
 
@@ -38,16 +37,17 @@ public final class SequentialBaseline {
     public static void main(String[] args) {
         int epochs = args.length >= 1 ? Integer.parseInt(args[0]) : DEFAULT_EPOCHS;
         long seed = args.length >= 2 ? Long.parseLong(args[1]) : DEFAULT_SEED;
+        int inputSize = args.length >= 3 ? Integer.parseInt(args[2]) : 0;
 
         try {
-            run(epochs, seed);
+            run(epochs, seed, inputSize);
         } catch (IOException e) {
             System.err.println("SequentialBaseline failed: " + e.getMessage());
             e.printStackTrace(System.err);
         }
     }
 
-    public static void run(int epochs, long seed) throws IOException {
+    public static void run(int epochs, long seed, int inputSize) throws IOException {
         if (epochs <= 0) {
             throw new IllegalArgumentException("epochs must be > 0");
         }
@@ -57,6 +57,9 @@ public final class SequentialBaseline {
         List<Sample> dataset = dataLoader.loadShard(0, 1);
         if (dataset.isEmpty()) {
             throw new IOException("Dataset is empty. Check data/cifar-10-batches-bin/ path.");
+        }
+        if (inputSize > 0 && dataset.size() > inputSize) {
+            dataset = dataset.subList(0, inputSize);
         }
         System.out.printf("[SequentialBaseline] Loaded %,d samples%n", dataset.size());
 
@@ -118,9 +121,6 @@ public final class SequentialBaseline {
                         accuracy,
                         wallSec);
 
-                if (epoch < epochs) {
-                    pauseBetweenEpochs();
-                }
             }
         }
 
@@ -152,13 +152,6 @@ public final class SequentialBaseline {
         model.loadWeights(weights);
     }
 
-    private static void pauseBetweenEpochs() {
-        try {
-            Thread.sleep(EPOCH_PAUSE_MS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 
     private static int argmax(double[] values) {
         int bestIdx = 0;
