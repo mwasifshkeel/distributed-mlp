@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -141,6 +142,7 @@ public class ProcessManager {
                             "512m");
                         workerProcs.add(wp);
                         pipeProcess(wp, "Worker-" + i, log);
+
                     Thread.sleep(200);
                 }
 
@@ -194,10 +196,14 @@ public class ProcessManager {
                 List<String> masterArgs = List.of(
                     String.valueOf(port), String.valueOf(workers),
                     String.valueOf(steps), String.valueOf(seed));
+                
+                // Enable WorkerReplacer for crash test
+                List<String> masterJvmProps = List.of("-Dmlp.enableReplacer=true");
+                
                 Process master = startJavaProcess(
                     "com.distributed.mlp.Master",
                     masterArgs,
-                    List.of(),
+                    masterJvmProps,  // Pass JVM props to enable replacer
                     "256m");
                 pipeProcess(master, "Master", log);
                 Thread.sleep(2000);
@@ -208,12 +214,16 @@ public class ProcessManager {
                     List<String> wArgs = List.of("127.0.0.1", String.valueOf(port),
                         String.valueOf(i), String.valueOf(workers),
                         String.valueOf(steps), String.valueOf(seed));
-                        Process wp = startJavaProcess(
-                            "com.distributed.mlp.Worker",
-                            wArgs,
-                            List.of(),
-                            "512m");
-                        pipeProcess(wp, "Worker-" + i, log);
+                    
+                    // Also enable replacer on workers (they may need to know)
+                    List<String> workerJvmProps = List.of("-Dmlp.enableReplacer=true");
+                    
+                    Process wp = startJavaProcess(
+                        "com.distributed.mlp.Worker",
+                        wArgs,
+                        workerJvmProps,
+                        "512m");
+                    pipeProcess(wp, "Worker-" + i, log);
                     workerProcs.add(wp);
                     if (i == workerToCrash) targetWorker = wp;
                     Thread.sleep(200);
@@ -224,14 +234,25 @@ public class ProcessManager {
                     Thread.sleep(crashAfterSec * 1000L);
                     Platform.runLater(() -> log.accept("💥 Killing worker " + workerToCrash + " (simulated crash)!"));
                     toKill.destroyForcibly();
+                    
+                    // Log the worker's output for debugging
+                    log.accept("💥 Worker " + workerToCrash + " killed. Waiting for replacement...");
                 }
 
-                for (Process wp : workerProcs) { if (wp.isAlive()) wp.waitFor(); }
-                master.waitFor();
+                for (Process wp : workerProcs) { 
+                    if (wp != targetWorker && wp.isAlive()) wp.waitFor(); 
+                }
+                if (master.isAlive()) master.waitFor();
 
-                Platform.runLater(() -> { log.accept("✅ Crash test session ended."); onDone.accept(true); });
+                Platform.runLater(() -> { 
+                    log.accept("✅ Crash test session ended."); 
+                    onDone.accept(true); 
+                });
             } catch (Exception ex) {
-                Platform.runLater(() -> { log.accept("❌ Error: " + ex.getMessage()); onDone.accept(false); });
+                Platform.runLater(() -> { 
+                    log.accept("❌ Error: " + ex.getMessage()); 
+                    onDone.accept(false); 
+                });
             }
         });
     }
@@ -287,6 +308,36 @@ public class ProcessManager {
             } catch (Exception ignored) {
             }
         });
+    }
+        
+    public void stopAllProcesses() {
+        System.out.println("[ProcessManager] Stopping all processes...");
+        
+        // Make a copy to avoid ConcurrentModificationException
+        List<Process> processesToStop;
+        synchronized (running) {
+            processesToStop = new ArrayList<>(running);
+        }
+        
+        for (Process p : processesToStop) {
+            if (p != null && p.isAlive()) {
+                p.destroy();
+                try {
+                    p.waitFor(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                if (p.isAlive()) {
+                    p.destroyForcibly();
+                }
+            }
+        }
+        
+        synchronized (running) {
+            running.clear();
+        }
+        
+        System.out.println("[ProcessManager] All processes stopped.");
     }
 
     private static Path createLogFile(String name) {

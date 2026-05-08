@@ -33,8 +33,6 @@ distributed-mlp/
 ├── pom.xml
 ├── README.md
 ├── run.sh                          # Main run script
-├── run_baseline.sh                 # Baseline benchmarks
-├── run_optimised.sh                # Optimized benchmarks
 ├── data/
 │   └── cifar-10-batches-bin/       # CIFAR-10 dataset (auto-downloaded)
 ├── logs/
@@ -126,13 +124,9 @@ java -cp target/classes com.distributed.mlp.gui.MLPDashboard
 ```bash
 # Run all benchmarks (sequential, sync, scaling, optimization)
 ./run.sh
-
-# Run only baseline benchmarks
-./run_baseline.sh
-
-# Run only optimized benchmarks (with compression + lazy pull)
-./run_optimised.sh
 ```
+
+You can override defaults like WORKERS, INPUT_SIZE, EPOCHS, COMPUTE_THREADS, IO_THREADS, MASTER_PORT, WORKER_HEAP_MB, MASTER_HEAP_MB, PULL_EVERY, and COMPRESS_GRADIENTS when running ./run.sh, e.g. WORKERS=6 INPUT_SIZE=100000 EPOCHS=5 COMPUTE_THREADS=4 ./run.sh.
 
 ### 1. Sequential Baseline
 

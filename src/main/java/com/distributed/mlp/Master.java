@@ -34,7 +34,7 @@ public final class Master {
 
     private static final Path LOG_PATH = Path.of("logs", "model.logs");
 
-        private static final int TOTAL_PARAMETERS = com.distributed.mlp.model.MLPModel.parameterCount();
+    private static final int TOTAL_PARAMETERS = com.distributed.mlp.model.MLPModel.parameterCount();
 
     private final int    port;
     private final int    expectedWorkers;
@@ -70,19 +70,25 @@ public final class Master {
     }
 
     public Master(int port, int expectedWorkers, int stepsPerWorker, long baseSeed, boolean enableCheckpoints) {
-        this.port            = port;
-        this.expectedWorkers = expectedWorkers;
-        this.learningRate    = DEFAULT_LEARNING_RATE;
-        this.globalWeights   = new double[TOTAL_PARAMETERS];
-        this.targetUpdates   = expectedWorkers * stepsPerWorker;
-        this.stepsPerWorker  = stepsPerWorker;
-        this.baseSeed        = baseSeed;
+        this.port              = port;
+        this.expectedWorkers   = expectedWorkers;
+        this.learningRate      = DEFAULT_LEARNING_RATE;
+        this.targetUpdates     = expectedWorkers * stepsPerWorker;
+        this.stepsPerWorker    = stepsPerWorker;
+        this.baseSeed          = baseSeed;
         this.enableCheckpoints = enableCheckpoints;
-        this.enableReplacer  = Boolean.parseBoolean(System.getProperty("mlp.enableReplacer", "false"));
-        this.liveWorkers     = new AtomicInteger(0); // incremented as handlers register
-        this.workerReplacer  = enableReplacer
+        this.enableReplacer    = Boolean.parseBoolean(System.getProperty("mlp.enableReplacer", "false"));
+        this.liveWorkers       = new AtomicInteger(0);
+        this.workerReplacer    = enableReplacer
             ? new WorkerReplacer("127.0.0.1", port, expectedWorkers, stepsPerWorker, baseSeed)
             : null;
+
+        // FIX: Initialize global weights from Xavier with baseSeed (same as Worker's
+        // initXavier(seed + workerId) where workerId=0 → seed+0 = seed).
+        // Previously globalWeights was all zeros, causing divergence from sequential training.
+        com.distributed.mlp.model.MLPModel tempModel = new com.distributed.mlp.model.MLPModel();
+        tempModel.initXavier(baseSeed);
+        this.globalWeights = tempModel.toFlatWeights();
     }
 
     public static void main(String[] args) {
@@ -106,7 +112,6 @@ public final class Master {
 
     public void start() throws IOException {
         if (enableCheckpoints) {
-            // Restore from checkpoint if one exists
             try {
                 Path latest = Checkpoint.findLatest();
                 if (latest != null) {
@@ -133,17 +138,11 @@ public final class Master {
             workerReplacer.start();
         }
 
-        // KEY FIX: keep the ServerSocket open for the entire training run.
-        // We do NOT close it after accepting initial workers — the background
-        // accept loop below uses it to admit replacement workers at any time.
-        // Worker.java needs ZERO changes: replacements connect on the same port
-        // with the same protocol as the originals.
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             serverSocket.setReuseAddress(true);
             System.out.printf("Master listening on port %d, waiting for %d workers...%n",
                     port, expectedWorkers);
 
-            // ── Accept initial workers (blocking, in order) ──────────────
             for (int id = 0; id < expectedWorkers; id++) {
                 Socket s = serverSocket.accept();
                 System.out.printf("Worker %d connected from %s%n", id, s.getRemoteSocketAddress());
@@ -151,36 +150,18 @@ public final class Master {
             }
             System.out.printf("All %d initial workers connected.%n", expectedWorkers);
 
-            // ── Background accept loop for replacement workers ───────────
-            // Replacement workers connect with the same Worker binary and the
-            // same args — there is no extra handshake byte.  WorkerReplacer
-            // ensures the correct workerId is passed as a JVM argument, so the
-            // replacement inherits the same data shard deterministically.
-            //
-            // The Master does NOT know the replacement's worker ID from the
-            // connection alone — it learns it via the first PULL_REQUEST or
-            // PUSH_GRADIENT, but the WorkerHandler only needs the ID for
-            // logging and channel management.  WorkerReplacer already chose
-            // the ID when it spawned the process, so we assign a synthetic
-            // "reconnect ID" by reading the next slot from a counter that
-            // WorkerReplacer updates.  In practice the simplest correct approach
-            // is: accept the socket, start a new handler with the SAME workerId
-            // that WorkerReplacer told us it spawned.  We do this by having
-            // WorkerReplacer register the expected next ID in a shared queue.
             if (enableReplacer && workerReplacer != null) {
                 Thread acceptLoop = new Thread(() -> {
                     while (!shutdownInitiated.get()) {
                         try {
-                            // SO_TIMEOUT so the loop can notice shutdownInitiated
                             serverSocket.setSoTimeout(1000);
                             Socket s;
                             try {
                                 s = serverSocket.accept();
                             } catch (java.net.SocketTimeoutException e) {
-                                continue;  // check shutdownInitiated and loop
+                                continue;
                             }
 
-                            // Ask WorkerReplacer which ID it assigned to this connection
                             int replacementId = workerReplacer.nextExpectedId();
                             System.out.printf("[Master] Replacement worker connected: id=%d from %s%n",
                                     replacementId, s.getRemoteSocketAddress());
@@ -199,8 +180,6 @@ public final class Master {
                 acceptLoop.start();
             }
 
-            // Wait for initial handler threads (replacements are daemons and
-            // are cleaned up when the JVM exits after training completes)
             List<Thread> initialThreads;
             synchronized (workerThreads) {
                 initialThreads = new ArrayList<>(workerThreads);
@@ -209,7 +188,6 @@ public final class Master {
                 try { t.join(); }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
-            // ServerSocket closed by try-with-resources → unblocks accept loop
         }
 
         if (enableReplacer && workerReplacer != null) {
@@ -266,7 +244,7 @@ public final class Master {
     private void unregisterChannel(WorkerChannel ch) {
         boolean removed;
         synchronized (workerChannels) { removed = workerChannels.remove(ch); }
-        if (!removed) return;  // already removed (e.g. watchdog + EOF both fire)
+        if (!removed) return;
 
         int remaining = liveWorkers.decrementAndGet();
         System.out.printf("[Master] Worker %d unregistered. Live workers: %d%n",
@@ -297,7 +275,6 @@ public final class Master {
     }
 
     private void broadcastShutdown() {
-        saveWeights();
         if (enableCheckpoints) {
             deleteAllCheckpoints();
             try { Checkpoint.save(snapshotGlobalWeights(), totalUpdates.get()); }
@@ -339,7 +316,7 @@ public final class Master {
         private final int    workerId;
         private final Socket socket;
         private volatile long lastGradientPushMs = System.currentTimeMillis();
-        private static final long GRADIENT_TIMEOUT_MS = 60_000; 
+        private static final long GRADIENT_TIMEOUT_MS = 60_000;
 
         WorkerHandler(int workerId, Socket socket) {
             this.workerId = workerId;
@@ -353,7 +330,7 @@ public final class Master {
                  DataOutputStream out = new DataOutputStream(s.getOutputStream())) {
 
                 WorkerChannel channel = new WorkerChannel(workerId, out);
-                registerChannel(channel);  // also increments liveWorkers
+                registerChannel(channel);
 
                 Thread watchdog = new Thread(() -> {
                     while (!shutdownInitiated.get() && !Thread.currentThread().isInterrupted()) {
@@ -447,7 +424,7 @@ public final class Master {
             byte[]   bytes    = new byte[payloadLen];
             in.readFully(bytes);
             int expectedDouble = TOTAL_PARAMETERS * Double.BYTES;
-            int expectedFloat = TOTAL_PARAMETERS * Float.BYTES;
+            int expectedFloat  = TOTAL_PARAMETERS * Float.BYTES;
             double[] gradient;
             if (payloadLen == expectedDouble) {
                 gradient = WeightSerializer.fromBytesDouble(bytes);
@@ -458,12 +435,13 @@ public final class Master {
                         workerId, payloadLen, expectedDouble, expectedFloat);
                 return;
             }
-            lastGradientPushMs = System.currentTimeMillis(); // Reset watchdog on push
-            int      n        = applyGradient(gradient);
+            lastGradientPushMs = System.currentTimeMillis();
+            int n = applyGradient(gradient);
             System.out.printf("[Master] Worker %d -> gradient applied (update #%d)%n",
                     workerId, n);
 
             if (n >= targetUpdates && shutdownInitiated.compareAndSet(false, true)) {
+                saveWeights();
                 System.out.printf("[Master] TARGET_UPDATES=%d reached. Broadcasting SHUTDOWN asynchronously.%n", n);
                 new Thread(() -> broadcastShutdown(), "master-shutdown-thread").start();
             }

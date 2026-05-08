@@ -39,7 +39,10 @@ public class TrainingPanel {
     private TextField stepsAutoField;
     private Spinner<Integer> computeThreadsSpinner;
     private Spinner<Integer> sampleLimitSpinner;
-    private ChoiceBox<String> modeChoice;
+    private Spinner<Integer> pullEverySpinner;
+    private Spinner<Integer> masterHeapSpinner;
+    private Spinner<Integer> workerHeapSpinner;
+    private ChoiceBox<String> gradientModeChoice;
 
     public TrainingPanel(LogConsole log) {
         this.log = log;
@@ -86,30 +89,35 @@ public class TrainingPanel {
         seedSpinner    = intSpinner(0, 99999, 42);
         computeThreadsSpinner = intSpinner(1, 64,
             Math.max(1, Runtime.getRuntime().availableProcessors() - 1));
+        pullEverySpinner = intSpinner(1, 100, 10);
+        masterHeapSpinner = intSpinner(128, 2048, 256);
+        workerHeapSpinner = intSpinner(256, 4096, 512);
 
-        modeChoice = new ChoiceBox<>();
-        modeChoice.getItems().addAll(
-            "Standard (run.sh)",
-            "Baseline (run_baseline.sh)",
-            "Optimised (run_optimised.sh)"
+        gradientModeChoice = new ChoiceBox<>();
+        gradientModeChoice.getItems().addAll(
+            "Compressed (default)",
+            "Uncompressed"
         );
-        modeChoice.getSelectionModel().selectFirst();
+        gradientModeChoice.getSelectionModel().selectFirst();
 
         addRow(grid, 0, "Workers",        workersSpinner, "Number of Worker JVMs to launch");
         addRow(grid, 1, "Epochs",         epochsSpinner,  "Number of passes over the dataset");
         sampleLimitSpinner = intSpinner(0, TOTAL_SAMPLES, 0);
-        addRow(grid, 2, "Sample Limit", sampleLimitSpinner, "0 = full dataset; otherwise use N samples total");
+        addRow(grid, 2, "Sample Limit",   sampleLimitSpinner, "0 = full dataset; otherwise use N samples total");
         // Auto‑calculated steps per worker (read-only)
         stepsAutoField = new TextField();
         stepsAutoField.setEditable(false);
-        stepsAutoField.getStyleClass().add("formula-field");  // defined in CSS
+        stepsAutoField.getStyleClass().add("formula-field");
         GridPane.setHgrow(stepsAutoField, Priority.ALWAYS);
-        updateAutoSteps();  // initial value
+        updateAutoSteps();
         addRow(grid, 3, "→ Steps/Worker", stepsAutoField, "Auto: (samples / workers / 32) * epochs");
         addRow(grid, 4, "Master Port",    portSpinner,     "TCP port for the parameter server");
         addRow(grid, 5, "Random Seed",    seedSpinner,     "Seed for deterministic sharding & weight init");
         addRow(grid, 6, "Compute Threads", computeThreadsSpinner, "Per-worker compute threads");
-        addRow(grid, 7, "Mode",           modeChoice, "Matches provided shell scripts");
+        addRow(grid, 7, "Pull Every",     pullEverySpinner, "Gradient pull frequency (steps)");
+        addRow(grid, 8, "Gradients",      gradientModeChoice, "Compress gradients to reduce network traffic");
+        addRow(grid, 9, "Master Heap (MB)", masterHeapSpinner, "Maximum heap size for Master JVM");
+        addRow(grid, 10, "Worker Heap (MB)", workerHeapSpinner, "Maximum heap size for each Worker JVM");
 
         // Listeners to update steps whenever workers or epochs change
         workersSpinner.valueProperty().addListener((obs, old, val) -> updateAutoSteps());
@@ -187,7 +195,7 @@ public class TrainingPanel {
             infoCard("Input Dim", "3072 (32×32×3)"),
             infoCard("Parameters", String.format("%,d", MLPModel.parameterCount())),
             infoCard("Protocol", "Async TCP Push/Pull"),
-            infoCard("Compression", "float32 gradients")
+            infoCard("Compression", "configurable")
         );
 
         box.getChildren().addAll(statusRow, progressBar, cards);
@@ -198,40 +206,52 @@ public class TrainingPanel {
 
     private void startTraining() {
         int workers = workersSpinner.getValue();
-        // Use the auto‑computed steps – already guaranteed correct
         int steps   = Integer.parseInt(stepsAutoField.getText());
         int port    = portSpinner.getValue();
         int seed    = seedSpinner.getValue();
         int totalSamples = getEffectiveTotalSamples();
-
         int computeThreads = computeThreadsSpinner.getValue();
-        String mode = modeChoice.getSelectionModel().getSelectedItem();
+        int pullEvery = pullEverySpinner.getValue();
+        int masterHeap = masterHeapSpinner.getValue();
+        int workerHeap = workerHeapSpinner.getValue();
+        boolean compressGradients = gradientModeChoice.getSelectionModel()
+            .getSelectedItem().equals("Compressed (default)");
 
         setStatus("running", "Training... (" + workers + " workers, " + steps + " steps each)");
         progressBar.setProgress(-1); // indeterminate
         startBtn.setDisable(true);
         stopBtn.setDisable(false);
         log.clear();
-        log.append("Starting distributed training: workers=" + workers + ", steps=" + steps
-            + ", port=" + port + ", seed=" + seed + ", computeThreads=" + computeThreads
-            + ", totalSamples=" + totalSamples);
+        log.append("Starting distributed training:");
+        log.append("  Workers: " + workers);
+        log.append("  Steps per worker: " + steps);
+        log.append("  Port: " + port);
+        log.append("  Seed: " + seed);
+        log.append("  Compute threads per worker: " + computeThreads);
+        log.append("  Total samples: " + totalSamples);
+        log.append("  Pull every: " + pullEvery + " steps");
+        log.append("  Gradient compression: " + compressGradients);
+        log.append("  Master heap: " + masterHeap + " MB");
+        log.append("  Worker heap: " + workerHeap + " MB");
 
-        String script = switch (mode) {
-            case "Baseline (run_baseline.sh)" -> "run_baseline.sh";
-            case "Optimised (run_optimised.sh)" -> "run_optimised.sh";
-            default -> "run.sh";
-        };
-
+        // Build environment variables for run.sh
         java.util.Map<String, String> env = new java.util.HashMap<>();
-        env.put("MLP_COMPUTE_THREADS", String.valueOf(computeThreads));
-        if (totalSamples < TOTAL_SAMPLES) {
-            env.put("MLP_MAX_SAMPLES", String.valueOf(totalSamples));
-            env.put("MLP_TOTAL_SAMPLES", String.valueOf(totalSamples));
-        }
+        env.put("MASTER_PORT", String.valueOf(port));
+        env.put("WORKERS", String.valueOf(workers));
+        env.put("INPUT_SIZE", String.valueOf(totalSamples));
+        env.put("COMPUTE_THREADS", String.valueOf(computeThreads));
+        env.put("EPOCHS", String.valueOf(epochsSpinner.getValue()));
+        env.put("PULL_EVERY", String.valueOf(pullEvery));
+        env.put("COMPRESS_GRADIENTS", String.valueOf(compressGradients));
+        env.put("MASTER_HEAP_MB", String.valueOf(masterHeap));
+        env.put("WORKER_HEAP_MB", String.valueOf(workerHeap));
+        
+        // Optional: set random seed for the training script
+        env.put("RANDOM_SEED", String.valueOf(seed));
 
         ProcessManager.getInstance().launchScript(
-            script,
-            java.util.List.of(String.valueOf(port), String.valueOf(workers), String.valueOf(computeThreads)),
+            "run.sh",
+            java.util.List.of(), // No command line arguments - use env vars
             env,
             log.asConsumer(),
             code -> {
@@ -240,7 +260,9 @@ public class TrainingPanel {
                 progressBar.setProgress(success ? 1.0 : 0);
                 startBtn.setDisable(false);
                 stopBtn.setDisable(true);
-                deleteStaleCheckpoints();
+                if (success) {
+                    deleteStaleCheckpoints();
+                }
             }
         );
     }

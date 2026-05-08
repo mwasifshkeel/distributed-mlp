@@ -10,6 +10,24 @@
     -fx-font-size: 13px;
 }
 
+.btn-stop {
+    -fx-background-color: #dc3545;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-padding: 10px 20px;
+    -fx-background-radius: 5px;
+    -fx-cursor: hand;
+}
+
+.btn-stop:hover {
+    -fx-background-color: #c82333;
+}
+
+.btn-stop:disabled {
+    -fx-background-color: #6c757d;
+    -fx-opacity: 0.65;
+}
+
 /* ── Header ─────────────────────────────────────────── */
 .header-bar {
     -fx-background-color: #13161e;
