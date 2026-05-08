@@ -18,19 +18,9 @@ Thumbs.db
 
 # Java build artifacts
 *.class
-GUI_PROJECT.md
 
 # Temporary files
 *.tmp
 *.swp
 
 *.bin
-
-PROJECT_REPORT.md
-
-results2/
-results3/
-
-PROJECT.md
-
-*.sh
