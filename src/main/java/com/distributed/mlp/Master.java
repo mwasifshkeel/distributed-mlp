@@ -83,9 +83,6 @@ public final class Master {
             ? new WorkerReplacer("127.0.0.1", port, expectedWorkers, stepsPerWorker, baseSeed)
             : null;
 
-        // FIX: Initialize global weights from Xavier with baseSeed (same as Worker's
-        // initXavier(seed + workerId) where workerId=0 → seed+0 = seed).
-        // Previously globalWeights was all zeros, causing divergence from sequential training.
         com.distributed.mlp.model.MLPModel tempModel = new com.distributed.mlp.model.MLPModel();
         tempModel.initXavier(baseSeed);
         this.globalWeights = tempModel.toFlatWeights();
