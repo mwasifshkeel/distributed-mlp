@@ -66,14 +66,13 @@
                 for (int workers : WORKER_CONFIGS) {
                     if (workers == 1) continue;
                     System.out.printf("[BenchmarkRunner] Async SGD (workers=%d, input=%d, epochs=%d)%n", workers, effectiveInputSize, EPOCHS);
-                    int threadsPerWorker = threadsPerWorker(workers);
                     List<EpochResult> asyncEpochs = runAsyncSgd(
                             workers,
-                            threadsPerWorker,
+                            1,
                             effectiveInputSize,
                             EPOCHS,
                             BASE_SEED + effectiveInputSize);
-                    appendRows("async_sgd", workers, threadsPerWorker, effectiveInputSize, asyncEpochs);
+                    appendRows("async_sgd", workers, 1, effectiveInputSize, asyncEpochs);
                 }
             }
         }
@@ -193,12 +192,6 @@
                 props.add("-D" + MAX_SAMPLES_PROP + "=" + maxSamples);
             }
             return props;
-        }
-
-        private static int threadsPerWorker(int workers) {
-            // int logicalCores = Runtime.getRuntime().availableProcessors();
-            // return Math.max(1, logicalCores / Math.max(1, workers));
-            return 1;
         }
 
         private static void pause(long millis) throws InterruptedException {
